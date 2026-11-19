@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build && npm run build:server",
+    "build:pages": "vite build",
     "build:server": "esbuild server.ts --bundle --platform=node --format=cjs --outfile=dist/server.cjs --external:express --external:cors --external:fuse.js --external:vite",
     "preview": "vite preview",
     "clean": "rm -rf dist",

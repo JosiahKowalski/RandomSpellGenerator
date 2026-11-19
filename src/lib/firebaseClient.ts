@@ -1,7 +1,8 @@
 import { initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
+import { Auth, getAuth } from "firebase/auth";
 import {
   doc,
+  Firestore,
   getDoc,
   getDocFromServer,
   getFirestore,
@@ -10,13 +11,59 @@ import {
   Timestamp,
   updateDoc,
 } from "firebase/firestore";
-import firebaseConfig from "../../firebase-applet-config.json";
 import { GrimoireSnapshot } from "../types/spell";
 import { sanitizeConfig, sanitizeStringList } from "./spellEngine";
 
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const auth = getAuth(app);
+interface FirebaseAppletConfig {
+  projectId?: string;
+  appId?: string;
+  apiKey?: string;
+  authDomain?: string;
+  firestoreDatabaseId?: string;
+  storageBucket?: string;
+  messagingSenderId?: string;
+  measurementId?: string;
+}
+
+const configModules = import.meta.glob<{ default: FirebaseAppletConfig }>(
+  "../../firebase-applet-config.json",
+  { eager: true }
+);
+
+const rawConfig: FirebaseAppletConfig | undefined =
+  Object.values(configModules)[0]?.default;
+
+const cloudSyncDisabledByEnv =
+  import.meta.env.VITE_DISABLE_CLOUD_SYNC === "true";
+
+const hasValidConfig = Boolean(
+  !cloudSyncDisabledByEnv &&
+    rawConfig &&
+    rawConfig.apiKey &&
+    rawConfig.projectId &&
+    rawConfig.projectId !== "remixed-project-id"
+);
+
+let dbInstance: Firestore | null = null;
+let authInstance: Auth | null = null;
+
+if (hasValidConfig && rawConfig) {
+  try {
+    const app = initializeApp(rawConfig);
+    dbInstance = rawConfig.firestoreDatabaseId
+      ? getFirestore(app, rawConfig.firestoreDatabaseId)
+      : getFirestore(app);
+    authInstance = getAuth(app);
+  } catch (err) {
+    console.warn("Firebase initialization skipped:", err);
+    dbInstance = null;
+    authInstance = null;
+  }
+}
+
+export const db = dbInstance;
+export const auth = authInstance;
+export const isCloudSyncConfigured = Boolean(dbInstance && authInstance);
 
 export enum OperationType {
   CREATE = "create",
@@ -44,6 +91,16 @@ export interface FirestoreErrorInfo {
   };
 }
 
+export function isUnauthorizedDomainError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  const message = (error as { message?: unknown }).message;
+  return (
+    code === "auth/unauthorized-domain" ||
+    (typeof message === "string" && message.includes("unauthorized-domain"))
+  );
+}
+
 export function handleFirestoreError(
   error: unknown,
   operationType: OperationType,
@@ -52,13 +109,13 @@ export function handleFirestoreError(
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
+      userId: auth?.currentUser?.uid,
+      email: auth?.currentUser?.email,
+      emailVerified: auth?.currentUser?.emailVerified,
+      isAnonymous: auth?.currentUser?.isAnonymous,
+      tenantId: auth?.currentUser?.tenantId,
       providerInfo:
-        auth.currentUser?.providerData?.map((provider) => ({
+        auth?.currentUser?.providerData?.map((provider) => ({
           providerId: provider.providerId,
           email: provider.email,
         })) || [],
@@ -71,6 +128,7 @@ export function handleFirestoreError(
 }
 
 export async function testFirestoreConnection(): Promise<void> {
+  if (!db) return;
   try {
     await getDocFromServer(doc(db, "test", "connection"));
   } catch (error) {
@@ -86,6 +144,7 @@ export async function testFirestoreConnection(): Promise<void> {
 export async function loadCloudGrimoire(
   uid: string
 ): Promise<GrimoireSnapshot | null> {
+  if (!db) return null;
   const docPath = `grimoireSaves/${uid}`;
   try {
     const snap = await getDoc(doc(db, "grimoireSaves", uid));
@@ -109,6 +168,7 @@ export async function saveCloudGrimoire(
   uid: string,
   snapshot: GrimoireSnapshot
 ): Promise<void> {
+  if (!db) return;
   const docPath = `grimoireSaves/${uid}`;
   const docRef = doc(db, "grimoireSaves", uid);
   const sanitizedKnown = sanitizeStringList(snapshot.knownSpellNames, 400);
@@ -142,6 +202,7 @@ export async function saveCloudGrimoire(
 export async function loadLegacyPermanentSpells(
   uid: string
 ): Promise<string[] | null> {
+  if (!db) return null;
   const docPath = `users/${uid}`;
   try {
     const snap = await getDoc(doc(db, "users", uid));

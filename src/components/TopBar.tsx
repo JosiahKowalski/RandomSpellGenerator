@@ -20,6 +20,7 @@ interface TopBarProps {
   onRollAll: () => void;
   theme: ThemeMode;
   onToggleTheme: () => void;
+  cloudSyncAvailable: boolean;
   authUser: FirebaseUser | null;
   isSyncing: boolean;
   lastSyncedLabel: string | null;
@@ -40,6 +41,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onRollAll,
   theme,
   onToggleTheme,
+  cloudSyncAvailable,
   authUser,
   isSyncing,
   lastSyncedLabel,
@@ -145,7 +147,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             >
               <Cloud className="w-4 h-4 text-ink-muted dark:text-ash" />
               <span className="hidden sm:inline">
-                {authUser ? "Sync" : "Save"}
+                {cloudSyncAvailable && authUser ? "Sync" : "Save"}
               </span>
             </button>
 
@@ -156,90 +158,102 @@ export const TopBar: React.FC<TopBarProps> = ({
               >
                 <div className="px-2 py-1 border-b border-limestone dark:border-charcoal-border pb-2.5">
                   <p className="text-xs font-medium text-ink dark:text-parchment">
-                    {authUser ? "Google Cloud Sync" : "Local Auto-Save Active"}
+                    {cloudSyncAvailable && authUser
+                      ? "Google Cloud Sync"
+                      : "Local Auto-Save Active"}
                   </p>
                   <p className="text-xs text-ink-muted dark:text-ash truncate mt-0.5">
-                    {authUser
-                      ? authUser.email
-                      : "Sign in to sync across devices"}
+                    {cloudSyncAvailable
+                      ? authUser
+                        ? authUser.email
+                        : "Sign in to sync across devices"
+                      : "Saved in this browser · Export JSON to transfer"}
                   </p>
-                  {authUser && lastSyncedLabel && (
+                  {cloudSyncAvailable && authUser && lastSyncedLabel && (
                     <p className="text-[11px] font-mono text-ink-muted dark:text-ash mt-1">
                       Last synced: {lastSyncedLabel}
                     </p>
                   )}
                 </div>
 
-                <div className="space-y-1">
-                  {authUser ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onSaveCloud();
-                          setMenuOpen(false);
-                        }}
-                        disabled={isSyncing}
-                        className="w-full px-2.5 py-2 rounded-md text-left text-sm flex items-center gap-2.5 hover:bg-linen dark:hover:bg-obsidian text-ink dark:text-parchment disabled:opacity-50 transition-colors"
-                      >
-                        <CloudUpload className="w-4 h-4 text-lapis dark:text-lapis-dark" />
-                        <span>
-                          {isSyncing ? "Saving to Cloud..." : "Save to Cloud"}
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onLoadCloud();
-                          setMenuOpen(false);
-                        }}
-                        disabled={isSyncing}
-                        className="w-full px-2.5 py-2 rounded-md text-left text-sm flex items-center gap-2.5 hover:bg-linen dark:hover:bg-obsidian text-ink dark:text-parchment disabled:opacity-50 transition-colors"
-                      >
-                        <RefreshCw className="w-4 h-4 text-ink-muted dark:text-ash" />
-                        <span>Pull from Cloud</span>
-                      </button>
-                      {hasLegacyCloudSave && (
+                {cloudSyncAvailable && (
+                  <div className="space-y-1">
+                    {authUser ? (
+                      <>
                         <button
                           type="button"
                           onClick={() => {
-                            onImportLegacyCloud();
+                            onSaveCloud();
                             setMenuOpen(false);
                           }}
-                          className="w-full px-2.5 py-2 rounded-md text-left text-sm flex items-center gap-2.5 hover:bg-linen dark:hover:bg-obsidian text-sienna dark:text-brass transition-colors"
+                          disabled={isSyncing}
+                          className="w-full px-2.5 py-2 rounded-md text-left text-sm flex items-center gap-2.5 hover:bg-linen dark:hover:bg-obsidian text-ink dark:text-parchment disabled:opacity-50 transition-colors"
                         >
-                          <History className="w-4 h-4" />
-                          <span>Import Legacy Locked Spells</span>
+                          <CloudUpload className="w-4 h-4 text-lapis dark:text-lapis-dark" />
+                          <span>
+                            {isSyncing ? "Saving to Cloud..." : "Save to Cloud"}
+                          </span>
                         </button>
-                      )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onLoadCloud();
+                            setMenuOpen(false);
+                          }}
+                          disabled={isSyncing}
+                          className="w-full px-2.5 py-2 rounded-md text-left text-sm flex items-center gap-2.5 hover:bg-linen dark:hover:bg-obsidian text-ink dark:text-parchment disabled:opacity-50 transition-colors"
+                        >
+                          <RefreshCw className="w-4 h-4 text-ink-muted dark:text-ash" />
+                          <span>Pull from Cloud</span>
+                        </button>
+                        {hasLegacyCloudSave && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onImportLegacyCloud();
+                              setMenuOpen(false);
+                            }}
+                            className="w-full px-2.5 py-2 rounded-md text-left text-sm flex items-center gap-2.5 hover:bg-linen dark:hover:bg-obsidian text-sienna dark:text-brass transition-colors"
+                          >
+                            <History className="w-4 h-4" />
+                            <span>Import Legacy Locked Spells</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onSignOut();
+                            setMenuOpen(false);
+                          }}
+                          className="w-full px-2.5 py-2 rounded-md text-left text-sm flex items-center gap-2.5 hover:bg-linen dark:hover:bg-obsidian text-ink-muted dark:text-ash transition-colors"
+                        >
+                          <LogOut className="w-4 h-4" />
+                          <span>Sign Out</span>
+                        </button>
+                      </>
+                    ) : (
                       <button
                         type="button"
                         onClick={() => {
-                          onSignOut();
+                          onSignIn();
                           setMenuOpen(false);
                         }}
-                        className="w-full px-2.5 py-2 rounded-md text-left text-sm flex items-center gap-2.5 hover:bg-linen dark:hover:bg-obsidian text-ink-muted dark:text-ash transition-colors"
+                        className="w-full px-2.5 py-2 rounded-md text-left text-sm font-medium flex items-center gap-2.5 hover:bg-linen dark:hover:bg-obsidian text-lapis dark:text-lapis-dark transition-colors"
                       >
-                        <LogOut className="w-4 h-4" />
-                        <span>Sign Out</span>
+                        <LogIn className="w-4 h-4" />
+                        <span>Sign in with Google</span>
                       </button>
-                    </>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSignIn();
-                        setMenuOpen(false);
-                      }}
-                      className="w-full px-2.5 py-2 rounded-md text-left text-sm font-medium flex items-center gap-2.5 hover:bg-linen dark:hover:bg-obsidian text-lapis dark:text-lapis-dark transition-colors"
-                    >
-                      <LogIn className="w-4 h-4" />
-                      <span>Sign in with Google</span>
-                    </button>
-                  )}
-                </div>
+                    )}
+                  </div>
+                )}
 
-                <div className="border-t border-limestone dark:border-charcoal-border pt-2 space-y-1">
+                <div
+                  className={`${
+                    cloudSyncAvailable
+                      ? "border-t border-limestone dark:border-charcoal-border pt-2"
+                      : ""
+                  } space-y-1`}
+                >
                   <button
                     type="button"
                     onClick={() => {

@@ -32,6 +32,8 @@ import {
 } from "./lib/spellEngine";
 import {
   auth,
+  isCloudSyncConfigured,
+  isUnauthorizedDomainError,
   loadCloudGrimoire,
   loadLegacyPermanentSpells,
   saveCloudGrimoire,
@@ -114,6 +116,9 @@ export default function App() {
   const [selectedSpell, setSelectedSpell] = useState<Spell | null>(null);
 
   // Cloud Auth & Sync State
+  const [cloudSyncAvailable, setCloudSyncAvailable] = useState<boolean>(
+    isCloudSyncConfigured
+  );
   const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncedLabel, setLastSyncedLabel] = useState<string | null>(null);
@@ -151,7 +156,7 @@ export default function App() {
     setIsCatalogLoading(true);
     setCatalogError(null);
     try {
-      const res = await fetch("/spells.csv");
+      const res = await fetch(`${import.meta.env.BASE_URL}spells.csv`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
       const parsed = parseSpellsCSV(text);
@@ -205,6 +210,8 @@ export default function App() {
 
   // Validate Firestore connection once on boot & subscribe to auth state
   useEffect(() => {
+    if (!auth || !isCloudSyncConfigured) return;
+
     testFirestoreConnection();
 
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -407,15 +414,24 @@ export default function App() {
 
   // Cloud Sync Handlers
   const handleSignIn = async () => {
+    if (!auth || !cloudSyncAvailable) return;
     try {
       await signInWithPopup(auth, new GoogleAuthProvider());
     } catch (err) {
+      if (isUnauthorizedDomainError(err)) {
+        setCloudSyncAvailable(false);
+        showToast(
+          "Google sign-in is not authorized for this domain. Local auto-save and JSON backup remain active."
+        );
+        return;
+      }
       console.error("Google sign-in failed:", err);
       showToast("Google sign-in was cancelled or blocked.");
     }
   };
 
   const handleSignOut = async () => {
+    if (!auth) return;
     await signOut(auth);
     showToast("Signed out. Local auto-save remains active.");
   };
@@ -551,6 +567,7 @@ export default function App() {
         onToggleTheme={() =>
           setTheme((prev) => (prev === "dark" ? "light" : "dark"))
         }
+        cloudSyncAvailable={cloudSyncAvailable}
         authUser={authUser}
         isSyncing={isSyncing}
         lastSyncedLabel={lastSyncedLabel}
