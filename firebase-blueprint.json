@@ -1,0 +1,69 @@
+{
+  "entities": {
+    "UserSaves": {
+      "title": "UserSaves",
+      "description": "Legacy character sheet save data preserved for reference and optional import",
+      "type": "object",
+      "properties": {
+        "character": { "type": "object" },
+        "database": { "type": "array" },
+        "activeSpells": { "type": "array" },
+        "permanentSpellNames": { "type": "array" },
+        "settings": { "type": "object" }
+      }
+    },
+    "GrimoireSave": {
+      "title": "GrimoireSave",
+      "description": "Compact spell randomizer state storing known spells, current rolled spells, and custom per-level randomizer rules",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the grimoire owner"
+        },
+        "knownSpellNames": {
+          "type": "array",
+          "description": "List of always-known permanent spell names (max 400)"
+        },
+        "rolledSpellNames": {
+          "type": "array",
+          "description": "List of currently active randomized bonus spell names (max 100)"
+        },
+        "config": {
+          "type": "object",
+          "description": "Randomizer rules including casterLevel, maxSpellLevel, levelCounts, class/school filters, and component exclusions"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the grimoire record was created"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest sync"
+        }
+      },
+      "required": [
+        "ownerId",
+        "knownSpellNames",
+        "rolledSpellNames",
+        "config",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": { "$ref": "#/entities/UserSaves" },
+      "description": "Legacy user character data preserved read/write for backwards compatibility"
+    },
+    "grimoireSaves/{userId}": {
+      "schema": { "$ref": "#/entities/GrimoireSave" },
+      "description": "Owner-isolated spell randomizer state synced across devices"
+    }
+  }
+}

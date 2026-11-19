@@ -1,0 +1,78 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-serif: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-paper: #FBF9F5;
+  --color-linen: #F3EFE7;
+  --color-limestone: #E2DBD0;
+  --color-ink: #1C1917;
+  --color-ink-muted: #57534E;
+
+  --color-obsidian: #121110;
+  --color-soot: #1B1917;
+  --color-charcoal-border: #2C2926;
+  --color-parchment: #F5F2EB;
+  --color-ash: #A8A29E;
+
+  --color-lapis: #1D4ED8;
+  --color-lapis-dark: #60A5FA;
+  --color-sienna: #9A3412;
+  --color-brass: #F59E0B;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-paper text-ink dark:bg-obsidian dark:text-parchment antialiased transition-colors duration-200;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  .dark body {
+    letter-spacing: 0.008em;
+  }
+
+  h1, h2, h3 {
+    text-wrap: balance;
+  }
+
+  /* Subtle archival scrollbar */
+  ::-webkit-scrollbar {
+    width: 7px;
+    height: 7px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-paper dark:bg-obsidian;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-limestone dark:bg-charcoal-border rounded-full hover:bg-stone-400 dark:hover:bg-stone-600;
+  }
+}
+
+/* Hide default number input spinners */
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

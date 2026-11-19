@@ -1,0 +1,153 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidStringList(list, maxLen) {
+      return list is list
+        && list.size() <= maxLen
+        && (list.size() == 0 || (list[0] is string && list[0].size() <= 120));
+    }
+
+    function isValidConfig(cfg) {
+      return cfg is map
+        && cfg.keys().hasAll([
+          'casterLevel',
+          'maxSpellLevel',
+          'levelCounts',
+          'classes',
+          'classMode',
+          'includeOptionalClasses',
+          'schools',
+          'schoolMode',
+          'excludeWeaponComponents',
+          'excludeCostlyMaterials',
+          'excludeConcentration',
+          'excludeRituals',
+          'excludedSources',
+          'activePreset'
+        ])
+        && cfg.keys().hasOnly([
+          'casterLevel',
+          'maxSpellLevel',
+          'levelCounts',
+          'classes',
+          'classMode',
+          'includeOptionalClasses',
+          'schools',
+          'schoolMode',
+          'excludeWeaponComponents',
+          'excludeCostlyMaterials',
+          'excludeConcentration',
+          'excludeRituals',
+          'excludedSources',
+          'activePreset'
+        ])
+        && cfg.casterLevel is int && cfg.casterLevel >= 1 && cfg.casterLevel <= 20
+        && cfg.maxSpellLevel is int && cfg.maxSpellLevel >= 0 && cfg.maxSpellLevel <= 9
+        && cfg.levelCounts is map && cfg.levelCounts.size() <= 10
+        && isValidStringList(cfg.classes, 30)
+        && cfg.classMode is string && cfg.classMode in ['include', 'exclude']
+        && cfg.includeOptionalClasses is bool
+        && isValidStringList(cfg.schools, 20)
+        && cfg.schoolMode is string && cfg.schoolMode in ['include', 'exclude']
+        && cfg.excludeWeaponComponents is bool
+        && cfg.excludeCostlyMaterials is bool
+        && cfg.excludeConcentration is bool
+        && cfg.excludeRituals is bool
+        && isValidStringList(cfg.excludedSources, 100)
+        && cfg.activePreset is string && cfg.activePreset.size() <= 40;
+    }
+
+    function isValidGrimoireSave(data, userId) {
+      return data.keys().hasAll([
+          'ownerId',
+          'knownSpellNames',
+          'rolledSpellNames',
+          'config',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'knownSpellNames',
+          'rolledSpellNames',
+          'config',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.ownerId is string
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.ownerId == userId
+        && isValidStringList(data.knownSpellNames, 400)
+        && isValidStringList(data.rolledSpellNames, 100)
+        && isValidConfig(data.config)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Legacy character sheet data (preserved owner-only for reference & migration import)
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+      allow create: if isSignedIn()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && incoming().keys().hasOnly(['character', 'database', 'activeSpells', 'permanentSpellNames', 'settings']);
+      allow update: if isSignedIn()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && incoming().diff(existing()).affectedKeys().hasOnly(['character', 'database', 'activeSpells', 'permanentSpellNames', 'settings']);
+      allow delete: if false;
+    }
+
+    // Dedicated compact spell randomizer save per authenticated user
+    match /grimoireSaves/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+
+      allow create: if isSignedIn()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidGrimoireSave(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidGrimoireSave(incoming(), userId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'knownSpellNames',
+          'rolledSpellNames',
+          'config',
+          'updatedAt'
+        ]);
+
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+    }
+  }
+}
