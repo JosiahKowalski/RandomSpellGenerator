@@ -35,9 +35,22 @@
           "type": "array",
           "description": "Spells currently stored inside a Ring of Spell Storing (max 5 entries totaling up to 5 spell levels)"
         },
+        "spellSlots": {
+          "type": "object",
+          "description": "Spell slot tracking state (useCustomMax flag, max slots per level 1-9, and expended slots per level 1-9)"
+        },
+        "concentrationSpell": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Name of the spell currently holding Concentration, or null when not concentrating"
+        },
+        "rollHistory": {
+          "type": "array",
+          "description": "Recent rolled spell snapshots for undo and restore (max 8 entries)"
+        },
         "config": {
           "type": "object",
-          "description": "Randomizer rules including casterLevel, maxSpellLevel, levelCounts, classWeights, multiClassRule, schoolWeights, and component exclusions"
+          "description": "Randomizer rules including casterLevel, maxSpellLevel, canRitualCast, levelCounts, classWeights, multiClassRule, schoolWeights, and component exclusions"
         },
         "createdAt": {
           "type": "string",
@@ -55,6 +68,9 @@
         "knownSpellNames",
         "rolledSpellNames",
         "ringSpells",
+        "spellSlots",
+        "concentrationSpell",
+        "rollHistory",
         "config",
         "createdAt",
         "updatedAt"

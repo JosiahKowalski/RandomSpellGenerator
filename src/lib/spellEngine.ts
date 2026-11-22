@@ -4,16 +4,20 @@ import {
   LevelShortfall,
   MultiClassRule,
   RandomizerConfig,
+  RollHistoryEntry,
   RollResult,
   RulePresetId,
   Spell,
+  SpellSlotState,
   StoredRingSpell,
 } from "../types/spell";
 import {
   casterLevelToMaxSpellLevel,
   createUniformWeights,
+  createZeroSlotMap,
   DEFAULT_CONFIG,
   DND_CLASSES,
+  getDefaultSpellSlots,
   MAGIC_SCHOOLS,
   RULE_PRESETS,
   SPELL_LEVELS,
@@ -469,6 +473,7 @@ export function sanitizeConfig(raw: unknown): RandomizerConfig {
   return {
     casterLevel,
     maxSpellLevel,
+    canRitualCast: Boolean(obj.canRitualCast),
     levelCounts,
     classWeights,
     multiClassRule,
@@ -562,6 +567,102 @@ export function sanitizeRingSpells(raw: unknown): StoredRingSpell[] {
   return out;
 }
 
+export const MAX_ROLL_HISTORY = 8;
+
+export function getEffectiveMaxSlots(
+  slotState: SpellSlotState,
+  casterLevel: number
+): Record<string, number> {
+  if (!slotState.useCustomMax) {
+    return getDefaultSpellSlots(casterLevel);
+  }
+  const out: Record<string, number> = {};
+  for (let lvl = 1; lvl <= 9; lvl++) {
+    const key = String(lvl);
+    const val = slotState.max[key];
+    out[key] =
+      typeof val === "number" && Number.isFinite(val)
+        ? Math.max(0, Math.min(9, Math.round(val)))
+        : 0;
+  }
+  return out;
+}
+
+export function sanitizeSpellSlots(
+  raw: unknown,
+  casterLevel = DEFAULT_CONFIG.casterLevel
+): SpellSlotState {
+  const defaultMax = getDefaultSpellSlots(casterLevel);
+  if (!raw || typeof raw !== "object") {
+    return {
+      useCustomMax: false,
+      max: defaultMax,
+      used: createZeroSlotMap(),
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+  const useCustomMax = Boolean(obj.useCustomMax);
+  const rawMax =
+    obj.max && typeof obj.max === "object"
+      ? (obj.max as Record<string, unknown>)
+      : {};
+  const rawUsed =
+    obj.used && typeof obj.used === "object"
+      ? (obj.used as Record<string, unknown>)
+      : {};
+
+  const max: Record<string, number> = {};
+  const used: Record<string, number> = {};
+
+  for (let lvl = 1; lvl <= 9; lvl++) {
+    const key = String(lvl);
+    const mVal = rawMax[key];
+    const cleanMax =
+      useCustomMax && typeof mVal === "number" && Number.isFinite(mVal)
+        ? Math.max(0, Math.min(9, Math.round(mVal)))
+        : defaultMax[key];
+    max[key] = cleanMax;
+
+    const uVal = rawUsed[key];
+    const cleanUsed =
+      typeof uVal === "number" && Number.isFinite(uVal)
+        ? Math.max(0, Math.min(cleanMax, Math.round(uVal)))
+        : 0;
+    used[key] = cleanUsed;
+  }
+
+  return { useCustomMax, max, used };
+}
+
+export function sanitizeConcentrationSpell(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const clean = raw.trim().slice(0, 120);
+  return clean || null;
+}
+
+export function sanitizeRollHistory(raw: unknown): RollHistoryEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const out: RollHistoryEntry[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i];
+    if (!item || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    const rolledSpellNames = sanitizeStringList(obj.rolledSpellNames, 100);
+    if (rolledSpellNames.length === 0) continue;
+    const id =
+      typeof obj.id === "string" && obj.id.trim()
+        ? obj.id.trim().slice(0, 80)
+        : `roll-${i}-${Date.now()}`;
+    const rolledAt =
+      typeof obj.rolledAt === "string" && obj.rolledAt.trim()
+        ? obj.rolledAt.trim().slice(0, 40)
+        : new Date().toISOString();
+    out.push({ id, rolledSpellNames, rolledAt });
+    if (out.length >= MAX_ROLL_HISTORY) break;
+  }
+  return out;
+}
+
 export function validateImportPayload(raw: unknown): GrimoireSnapshot | null {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
@@ -573,11 +674,15 @@ export function validateImportPayload(raw: unknown): GrimoireSnapshot | null {
     (obj.config && typeof obj.config === "object");
 
   if (isNewFormat) {
+    const cleanConfig = sanitizeConfig(obj.config);
     return {
       knownSpellNames: sanitizeStringList(obj.knownSpellNames, 400),
       rolledSpellNames: sanitizeStringList(obj.rolledSpellNames, 100),
       ringSpells: sanitizeRingSpells(obj.ringSpells),
-      config: sanitizeConfig(obj.config),
+      spellSlots: sanitizeSpellSlots(obj.spellSlots, cleanConfig.casterLevel),
+      concentrationSpell: sanitizeConcentrationSpell(obj.concentrationSpell),
+      rollHistory: sanitizeRollHistory(obj.rollHistory),
+      config: cleanConfig,
       updatedAt:
         typeof obj.updatedAt === "string"
           ? obj.updatedAt
@@ -605,26 +710,31 @@ export function validateImportPayload(raw: unknown): GrimoireSnapshot | null {
           .map((s) => s.name)
       : [];
 
+    const cleanConfig = sanitizeConfig({
+      casterLevel: legacyLevel,
+      maxSpellLevel: casterLevelToMaxSpellLevel(legacyLevel),
+      classes: Array.isArray(legacySettings.classes)
+        ? legacySettings.classes
+        : [],
+      classMode: legacySettings.excludeClasses ? "exclude" : "include",
+      schools: Array.isArray(legacySettings.schools)
+        ? legacySettings.schools
+        : [],
+      schoolMode: legacySettings.excludeSchools ? "exclude" : "include",
+      excludeWeaponComponents:
+        typeof legacySettings.excludeWeaponComponents === "boolean"
+          ? legacySettings.excludeWeaponComponents
+          : true,
+    });
+
     return {
       knownSpellNames: sanitizeStringList(obj.permanentSpellNames, 400),
       rolledSpellNames: sanitizeStringList(legacyActive, 100),
       ringSpells: [],
-      config: sanitizeConfig({
-        casterLevel: legacyLevel,
-        maxSpellLevel: casterLevelToMaxSpellLevel(legacyLevel),
-        classes: Array.isArray(legacySettings.classes)
-          ? legacySettings.classes
-          : [],
-        classMode: legacySettings.excludeClasses ? "exclude" : "include",
-        schools: Array.isArray(legacySettings.schools)
-          ? legacySettings.schools
-          : [],
-        schoolMode: legacySettings.excludeSchools ? "exclude" : "include",
-        excludeWeaponComponents:
-          typeof legacySettings.excludeWeaponComponents === "boolean"
-            ? legacySettings.excludeWeaponComponents
-            : true,
-      }),
+      spellSlots: sanitizeSpellSlots(undefined, cleanConfig.casterLevel),
+      concentrationSpell: null,
+      rollHistory: [],
+      config: cleanConfig,
       updatedAt: new Date().toISOString(),
     };
   }

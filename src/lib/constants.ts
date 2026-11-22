@@ -1,4 +1,4 @@
-import { RandomizerConfig, RulePresetId } from "../types/spell";
+import { RandomizerConfig, RulePresetId, SpellSlotState } from "../types/spell";
 
 export interface SpellLevelMeta {
   index: number;
@@ -128,9 +128,66 @@ export function casterLevelToMaxSpellLevel(casterLevel: number): number {
   return Math.min(9, Math.ceil(clamped / 2));
 }
 
+// Official D&D 5e full-caster spell slots per caster level (1..20), indexed 1st..9th
+export const FULL_CASTER_SPELL_SLOTS: Record<number, number[]> = {
+  1: [2, 0, 0, 0, 0, 0, 0, 0, 0],
+  2: [3, 0, 0, 0, 0, 0, 0, 0, 0],
+  3: [4, 2, 0, 0, 0, 0, 0, 0, 0],
+  4: [4, 3, 0, 0, 0, 0, 0, 0, 0],
+  5: [4, 3, 2, 0, 0, 0, 0, 0, 0],
+  6: [4, 3, 3, 0, 0, 0, 0, 0, 0],
+  7: [4, 3, 3, 1, 0, 0, 0, 0, 0],
+  8: [4, 3, 3, 2, 0, 0, 0, 0, 0],
+  9: [4, 3, 3, 3, 1, 0, 0, 0, 0],
+  10: [4, 3, 3, 3, 2, 0, 0, 0, 0],
+  11: [4, 3, 3, 3, 2, 1, 0, 0, 0],
+  12: [4, 3, 3, 3, 2, 1, 0, 0, 0],
+  13: [4, 3, 3, 3, 2, 1, 1, 0, 0],
+  14: [4, 3, 3, 3, 2, 1, 1, 0, 0],
+  15: [4, 3, 3, 3, 2, 1, 1, 1, 0],
+  16: [4, 3, 3, 3, 2, 1, 1, 1, 0],
+  17: [4, 3, 3, 3, 2, 1, 1, 1, 1],
+  18: [4, 3, 3, 3, 3, 1, 1, 1, 1],
+  19: [4, 3, 3, 3, 3, 2, 1, 1, 1],
+  20: [4, 3, 3, 3, 3, 2, 2, 1, 1],
+};
+
+export function createZeroSlotMap(): Record<string, number> {
+  return {
+    "1": 0,
+    "2": 0,
+    "3": 0,
+    "4": 0,
+    "5": 0,
+    "6": 0,
+    "7": 0,
+    "8": 0,
+    "9": 0,
+  };
+}
+
+export function getDefaultSpellSlots(
+  casterLevel: number
+): Record<string, number> {
+  const clamped = Math.max(1, Math.min(20, Math.round(casterLevel)));
+  const row = FULL_CASTER_SPELL_SLOTS[clamped] || FULL_CASTER_SPELL_SLOTS[1];
+  const map: Record<string, number> = {};
+  for (let lvl = 1; lvl <= 9; lvl++) {
+    map[String(lvl)] = row[lvl - 1] ?? 0;
+  }
+  return map;
+}
+
+export const DEFAULT_SPELL_SLOTS: SpellSlotState = {
+  useCustomMax: false,
+  max: getDefaultSpellSlots(5),
+  used: createZeroSlotMap(),
+};
+
 export const DEFAULT_CONFIG: RandomizerConfig = {
   casterLevel: 5,
   maxSpellLevel: casterLevelToMaxSpellLevel(5),
+  canRitualCast: false,
   levelCounts: { ...RULE_PRESETS.standard_121.counts },
   classWeights: createUniformWeights(DND_CLASSES, 1),
   multiClassRule: "lowest",

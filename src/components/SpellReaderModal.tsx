@@ -1,19 +1,25 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { ExternalLink, Lock, Plus, RefreshCw, Unlock, X } from "lucide-react";
-import { Spell } from "../types/spell";
+import { Spell, SpellSlotState } from "../types/spell";
 import { SPELL_LEVELS } from "../lib/constants";
-import { getSpell5eToolsUrl } from "../lib/spellEngine";
+import { getEffectiveMaxSlots, getSpell5eToolsUrl } from "../lib/spellEngine";
 
 interface SpellReaderModalProps {
   spell: Spell | null;
   isKnown: boolean;
   isRolled: boolean;
   ringRemainingLevels: number;
+  casterLevel: number;
+  canRitualCast: boolean;
+  slotState: SpellSlotState;
+  concentrationSpell: string | null;
   onClose: () => void;
   onToggleKnown: (spellName: string) => void;
   onReroll?: (spellName: string) => void;
   onQuickStoreInRing?: (spell: Spell) => void;
+  onCastSpell?: (spell: Spell, slotLevel: number | null) => void;
+  onSetConcentration?: (spellName: string | null) => void;
 }
 
 const NUMERIC_COLUMN_HEADER =
@@ -149,11 +155,47 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
   isKnown,
   isRolled,
   ringRemainingLevels,
+  casterLevel,
+  canRitualCast,
+  slotState,
+  concentrationSpell,
   onClose,
   onToggleKnown,
   onReroll,
   onQuickStoreInRing,
+  onCastSpell,
+  onSetConcentration,
 }) => {
+  const effectiveMax = useMemo(
+    () => getEffectiveMaxSlots(slotState, casterLevel),
+    [slotState, casterLevel]
+  );
+
+  const availableSlotLevels = useMemo(() => {
+    if (!spell || spell.levelIndex === 0) return [];
+    const options: Array<{ level: number; remaining: number; max: number }> = [];
+    for (let lvl = spell.levelIndex; lvl <= 9; lvl++) {
+      const key = String(lvl);
+      const max = effectiveMax[key] ?? 0;
+      const used = Math.min(max, Math.max(0, slotState.used[key] ?? 0));
+      const remaining = Math.max(0, max - used);
+      if (remaining > 0) {
+        options.push({ level: lvl, remaining, max });
+      }
+    }
+    return options;
+  }, [spell, effectiveMax, slotState.used]);
+
+  const [selectedCastLevel, setSelectedCastLevel] = useState<number>(1);
+
+  useEffect(() => {
+    if (availableSlotLevels.length > 0) {
+      setSelectedCastLevel(availableSlotLevels[0].level);
+    } else if (spell) {
+      setSelectedCastLevel(Math.max(1, spell.levelIndex));
+    }
+  }, [spell, availableSlotLevels]);
+
   useEffect(() => {
     if (!spell) return;
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -164,6 +206,18 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
   }, [spell, onClose]);
 
   if (!spell || typeof document === "undefined") return null;
+
+  const isConcentratingOnThis = Boolean(
+    concentrationSpell &&
+      concentrationSpell.toLowerCase() === spell.name.toLowerCase()
+  );
+  const willReplaceConcentration = Boolean(
+    spell.isConcentration && concentrationSpell && !isConcentratingOnThis
+  );
+  const chosenSlotOption =
+    availableSlotLevels.find((opt) => opt.level === selectedCastLevel) ||
+    availableSlotLevels[0] ||
+    null;
 
   const levelMeta = SPELL_LEVELS[spell.levelIndex];
   const levelDescriptor =
@@ -298,6 +352,93 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
             )}
           </div>
         </div>
+
+        {/* Tabletop Cast & Concentration Strip */}
+        {(onCastSpell || onSetConcentration) &&
+          (spell.levelIndex > 0 || spell.isConcentration) && (
+            <div className="px-6 py-3 border-t border-limestone dark:border-charcoal-border bg-paper dark:bg-soot flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {spell.levelIndex > 0 && onCastSpell && (
+                  <>
+                    {chosenSlotOption ? (
+                      <>
+                        {availableSlotLevels.length > 1 && (
+                          <select
+                            aria-label="Choose spell slot level"
+                            value={chosenSlotOption.level}
+                            onChange={(e) =>
+                              setSelectedCastLevel(Number(e.target.value))
+                            }
+                            className="h-9 px-2.5 rounded-md border border-limestone dark:border-charcoal-border bg-linen/70 dark:bg-obsidian text-xs font-mono tabular-nums text-ink dark:text-parchment focus:outline-none focus:ring-2 focus:ring-lapis dark:focus:ring-lapis-dark"
+                          >
+                            {availableSlotLevels.map((opt) => (
+                              <option key={opt.level} value={opt.level}>
+                                {SPELL_LEVELS[opt.level]?.shortLabel} slot (
+                                {opt.remaining}/{opt.max})
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onCastSpell(spell, chosenSlotOption.level)
+                          }
+                          className="h-9 px-3.5 inline-flex items-center gap-1.5 rounded-md bg-lapis text-white hover:bg-blue-800 dark:bg-lapis-dark dark:text-obsidian dark:hover:bg-blue-300 text-xs font-medium transition-colors whitespace-nowrap"
+                        >
+                          <span>
+                            Cast ({SPELL_LEVELS[chosenSlotOption.level]?.shortLabel})
+                          </span>
+                        </button>
+                      </>
+                    ) : (
+                      <span className="text-xs text-ink-muted dark:text-ash">
+                        No {SPELL_LEVELS[spell.levelIndex]?.shortLabel}+ slots left
+                      </span>
+                    )}
+
+                    {canRitualCast && spell.isRitual && (
+                      <button
+                        type="button"
+                        onClick={() => onCastSpell(spell, null)}
+                        className="h-9 px-3 inline-flex items-center rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-xs font-medium text-ink dark:text-parchment hover:bg-linen dark:hover:bg-soot transition-colors whitespace-nowrap"
+                      >
+                        Cast as Ritual
+                      </button>
+                    )}
+                  </>
+                )}
+
+                {spell.isConcentration && onSetConcentration && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onSetConcentration(
+                        isConcentratingOnThis ? null : spell.name
+                      )
+                    }
+                    className={`h-9 px-3 inline-flex items-center rounded-md border text-xs font-medium transition-colors whitespace-nowrap ${
+                      isConcentratingOnThis
+                        ? "border-sienna/50 dark:border-brass/50 text-sienna dark:text-brass bg-linen/70 dark:bg-obsidian hover:bg-linen dark:hover:bg-soot"
+                        : "border-limestone dark:border-charcoal-border text-ink dark:text-parchment bg-paper dark:bg-obsidian hover:bg-linen dark:hover:bg-soot"
+                    }`}
+                  >
+                    {isConcentratingOnThis
+                      ? "Drop Concentration"
+                      : spell.levelIndex === 0
+                      ? "Concentrate"
+                      : "Set Concentration"}
+                  </button>
+                )}
+              </div>
+
+              {willReplaceConcentration && (
+                <span className="text-xs text-sienna dark:text-brass">
+                  Replaces concentration on {concentrationSpell}
+                </span>
+              )}
+            </div>
+          )}
 
         {/* Footer Actions */}
         <div className="px-6 py-4 border-t border-limestone dark:border-charcoal-border bg-linen/70 dark:bg-obsidian/60 flex flex-wrap items-center justify-between gap-3">

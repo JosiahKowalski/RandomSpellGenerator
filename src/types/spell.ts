@@ -43,6 +43,7 @@ export type RulePresetId =
 export interface RandomizerConfig {
   casterLevel: number;
   maxSpellLevel: number;
+  canRitualCast: boolean;
   levelCounts: Record<string, number>;
   classWeights: Record<string, number>;
   multiClassRule: MultiClassRule;
@@ -56,10 +57,25 @@ export interface RandomizerConfig {
   activePreset: RulePresetId;
 }
 
+export interface SpellSlotState {
+  useCustomMax: boolean;
+  max: Record<string, number>; // "1".."9"
+  used: Record<string, number>; // "1".."9"
+}
+
+export interface RollHistoryEntry {
+  id: string;
+  rolledSpellNames: string[];
+  rolledAt: string;
+}
+
 export interface GrimoireSnapshot {
   knownSpellNames: string[];
   rolledSpellNames: string[];
   ringSpells: StoredRingSpell[];
+  spellSlots: SpellSlotState;
+  concentrationSpell: string | null;
+  rollHistory: RollHistoryEntry[];
   config: RandomizerConfig;
   updatedAt: string;
 }

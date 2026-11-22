@@ -1,20 +1,26 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Check,
+  History,
   Lock,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   SlidersHorizontal,
   Trash2,
   Unlock,
+  Wand2,
   X,
 } from "lucide-react";
 import {
   LevelShortfall,
   RandomizerConfig,
+  RollHistoryEntry,
   Spell,
   SpellFilterTab,
+  SpellSlotState,
 } from "../types/spell";
 import {
   casterLevelToMaxSpellLevel,
@@ -22,7 +28,12 @@ import {
   MAGIC_SCHOOLS,
   SPELL_LEVELS,
 } from "../lib/constants";
-import { getTotalPlannedRolls, summarizeWeights } from "../lib/spellEngine";
+import {
+  getEffectiveMaxSlots,
+  getTotalPlannedRolls,
+  summarizeWeights,
+} from "../lib/spellEngine";
+import { SpellSlotsPanel } from "./SpellSlotsPanel";
 
 interface SpellbookViewProps {
   catalog: Spell[];
@@ -31,6 +42,10 @@ interface SpellbookViewProps {
   eligiblePoolCount: number;
   config: RandomizerConfig;
   shortfalls: LevelShortfall[];
+  slotState: SpellSlotState;
+  concentrationSpell: string | null;
+  rollHistory: RollHistoryEntry[];
+  lastSlotFlash?: { level: number; seq: number } | null;
   onRollAll: () => void;
   onClearRolled: () => void;
   onRerollSingle: (spellName: string) => void;
@@ -39,6 +54,35 @@ interface SpellbookViewProps {
   onOpenSpell: (spell: Spell) => void;
   onUpdateConfig: (next: RandomizerConfig) => void;
   onOpenRules: () => void;
+  onCastSpell: (spell: Spell, slotLevel: number | null) => void;
+  onExpendSlot: (level: number) => void;
+  onRecoverSlot: (level: number) => void;
+  onSetCustomMaxSlot: (level: number, nextMax: number) => void;
+  onResetSlotDefaults: () => void;
+  onLongRest: () => void;
+  onDropConcentration: () => void;
+  onRestoreRollHistory: (entryId: string) => void;
+  onClearRollHistory: () => void;
+}
+
+function formatHistoryTimestamp(iso: string): string {
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return "Previous roll";
+  const now = new Date();
+  const isSameDay =
+    dt.getFullYear() === now.getFullYear() &&
+    dt.getMonth() === now.getMonth() &&
+    dt.getDate() === now.getDate();
+  const timeStr = dt.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  if (isSameDay) return timeStr;
+  const dateStr = dt.toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+  });
+  return `${dateStr} · ${timeStr}`;
 }
 
 export const SpellbookView: React.FC<SpellbookViewProps> = ({
@@ -48,6 +92,10 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
   eligiblePoolCount,
   config,
   shortfalls,
+  slotState,
+  concentrationSpell,
+  rollHistory,
+  lastSlotFlash,
   onRollAll,
   onClearRolled,
   onRerollSingle,
@@ -56,11 +104,60 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
   onOpenSpell,
   onUpdateConfig,
   onOpenRules,
+  onCastSpell,
+  onExpendSlot,
+  onRecoverSlot,
+  onSetCustomMaxSlot,
+  onResetSlotDefaults,
+  onLongRest,
+  onDropConcentration,
+  onRestoreRollHistory,
+  onClearRollHistory,
 }) => {
   const [filterTab, setFilterTab] = useState<SpellFilterTab>("all");
   const [activeSearch, setActiveSearch] = useState("");
   const [knownAddQuery, setKnownAddQuery] = useState("");
   const [showKnownDropdown, setShowKnownDropdown] = useState(false);
+  const [showAllHistory, setShowAllHistory] = useState(false);
+  const [castEffects, setCastEffects] = useState<Record<string, number>>({});
+  const castTimersRef = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    const timers = castTimersRef.current;
+    return () => {
+      Object.values(timers).forEach((timerId) => window.clearTimeout(timerId));
+    };
+  }, []);
+
+  const triggerCardCast = (spell: Spell, slotLevel: number | null) => {
+    onCastSpell(spell, slotLevel);
+    const seq = Date.now() + Math.random();
+    setCastEffects((prev) => ({ ...prev, [spell.id]: seq }));
+
+    if (castTimersRef.current[spell.id]) {
+      window.clearTimeout(castTimersRef.current[spell.id]);
+    }
+    castTimersRef.current[spell.id] = window.setTimeout(() => {
+      setCastEffects((prev) => {
+        if (prev[spell.id] !== seq) return prev;
+        const next = { ...prev };
+        delete next[spell.id];
+        return next;
+      });
+      delete castTimersRef.current[spell.id];
+    }, 760);
+  };
+
+  const effectiveMaxSlots = useMemo(
+    () => getEffectiveMaxSlots(slotState, config.casterLevel),
+    [slotState, config.casterLevel]
+  );
+
+  const concentrationSpellObj = useMemo(() => {
+    if (!concentrationSpell) return null;
+    const lower = concentrationSpell.toLowerCase();
+    return catalog.find((s) => s.name.toLowerCase() === lower) || null;
+  }, [concentrationSpell, catalog]);
 
   const knownNameSet = useMemo(
     () => new Set(knownSpells.map((s) => s.name.toLowerCase())),
@@ -175,6 +272,22 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
               </button>
             </div>
           </div>
+
+          {/* Spell Slots & Concentration Tracker */}
+          <SpellSlotsPanel
+            casterLevel={config.casterLevel}
+            slotState={slotState}
+            concentrationSpell={concentrationSpell}
+            concentrationSpellObj={concentrationSpellObj}
+            lastSlotFlash={lastSlotFlash}
+            onExpendSlot={onExpendSlot}
+            onRecoverSlot={onRecoverSlot}
+            onSetCustomMaxSlot={onSetCustomMaxSlot}
+            onResetSlotDefaults={onResetSlotDefaults}
+            onLongRest={onLongRest}
+            onDropConcentration={onDropConcentration}
+            onOpenSpell={onOpenSpell}
+          />
 
           {/* Controls Row: Quick-Add Known Spell + Filter Tabs */}
           <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
@@ -389,6 +502,16 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
               const rolledCount = entries.filter(
                 (e) => e.kind === "rolled"
               ).length;
+              const levelMaxSlots =
+                lvl.index > 0 ? effectiveMaxSlots[lvl.key] ?? 0 : 0;
+              const levelUsedSlots = Math.min(
+                levelMaxSlots,
+                Math.max(0, slotState.used[lvl.key] ?? 0)
+              );
+              const levelRemainingSlots = Math.max(
+                0,
+                levelMaxSlots - levelUsedSlots
+              );
 
               return (
                 <section key={lvl.key} className="space-y-4">
@@ -400,101 +523,267 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
                       {knownCount > 0 ? `${knownCount} known` : ""}
                       {knownCount > 0 && rolledCount > 0 ? " · " : ""}
                       {rolledCount > 0 ? `${rolledCount} rolled` : ""}
+                      {levelMaxSlots > 0
+                        ? ` · ${levelRemainingSlots}/${levelMaxSlots} slots`
+                        : ""}
                     </span>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {entries.map(({ spell, kind }) => {
                       const isKnown = kind === "known";
+                      const isConcentrating = Boolean(
+                        concentrationSpell &&
+                          concentrationSpell.toLowerCase() ===
+                            spell.name.toLowerCase()
+                      );
+                      const castSeq = castEffects[spell.id];
+                      const isJustCast = Boolean(castSeq);
+
+                      // Resolve quickest valid cast option for this card
+                      let quickCastMode:
+                        | "cantrip"
+                        | "base"
+                        | "upcast"
+                        | "ritual"
+                        | "empty" = "empty";
+                      let quickCastSlotLevel: number | null = null;
+                      if (spell.levelIndex === 0) {
+                        quickCastMode = "cantrip";
+                      } else {
+                        for (let sLvl = spell.levelIndex; sLvl <= 9; sLvl++) {
+                          const sKey = String(sLvl);
+                          const sMax = effectiveMaxSlots[sKey] ?? 0;
+                          const sUsed = Math.min(
+                            sMax,
+                            Math.max(0, slotState.used[sKey] ?? 0)
+                          );
+                          if (sMax - sUsed > 0) {
+                            quickCastSlotLevel = sLvl;
+                            quickCastMode =
+                              sLvl === spell.levelIndex ? "base" : "upcast";
+                            break;
+                          }
+                        }
+                        if (
+                          quickCastMode === "empty" &&
+                          config.canRitualCast &&
+                          spell.isRitual
+                        ) {
+                          quickCastMode = "ritual";
+                        }
+                      }
+
+                      const showSideRitualButton =
+                        config.canRitualCast &&
+                        spell.isRitual &&
+                        spell.levelIndex > 0 &&
+                        (quickCastMode === "base" ||
+                          quickCastMode === "upcast");
+
+                      const canQuickCast = quickCastMode !== "empty";
+                      const castButtonLabel = isJustCast
+                        ? "Cast"
+                        : quickCastMode === "upcast" && quickCastSlotLevel
+                        ? `Cast (${SPELL_LEVELS[quickCastSlotLevel]?.shortLabel})`
+                        : quickCastMode === "ritual"
+                        ? "Ritual"
+                        : quickCastMode === "empty"
+                        ? "No slots"
+                        : "Cast";
+
+                      const castButtonTitle =
+                        quickCastMode === "cantrip"
+                          ? spell.isConcentration
+                            ? `Quick cast ${spell.name} (cantrip, sets concentration)`
+                            : `Quick cast ${spell.name} (cantrip)`
+                          : quickCastMode === "base" && quickCastSlotLevel
+                          ? `Quick cast ${spell.name} using a ${SPELL_LEVELS[quickCastSlotLevel]?.shortLabel}-level slot`
+                          : quickCastMode === "upcast" && quickCastSlotLevel
+                          ? `No ${SPELL_LEVELS[spell.levelIndex]?.shortLabel}-level slots left — upcast using a ${SPELL_LEVELS[quickCastSlotLevel]?.shortLabel}-level slot`
+                          : quickCastMode === "ritual"
+                          ? `Cast ${spell.name} as a ritual (no slot used)`
+                          : `No ${SPELL_LEVELS[spell.levelIndex]?.shortLabel}+ spell slots remaining`;
+
                       return (
                         <article
                           key={`${kind}-${spell.id}`}
                           onClick={() => onOpenSpell(spell)}
-                          className={`group rounded-lg border p-4 cursor-pointer transition-colors flex items-start justify-between gap-3 ${
-                            isKnown
+                          className={`group relative overflow-hidden rounded-lg border p-4 cursor-pointer transition-colors flex flex-col justify-between gap-3 ${
+                            isConcentrating
+                              ? isKnown
+                                ? "bg-linen/75 dark:bg-soot border-sienna/60 dark:border-brass/60 hover:border-sienna dark:hover:border-brass"
+                                : "bg-paper dark:bg-obsidian border-sienna/60 dark:border-brass/60 hover:bg-linen/50 dark:hover:bg-soot"
+                              : isKnown
                               ? "bg-linen/75 dark:bg-soot border-limestone dark:border-charcoal-border hover:border-stone-400 dark:hover:border-stone-600"
                               : "bg-paper dark:bg-obsidian border-limestone dark:border-charcoal-border hover:bg-linen/50 dark:hover:bg-soot"
                           }`}
                         >
-                          <div className="min-w-0 flex-1 space-y-1">
-                            <div className="flex items-center gap-1.5 text-xs text-ink-muted dark:text-ash">
-                              {isKnown ? (
-                                <span className="inline-flex items-center gap-1 font-medium text-sienna dark:text-brass">
-                                  <Lock className="w-3 h-3" />
-                                  Known
+                          {/* Subtle Cast Sheen & Border Pulse Overlay */}
+                          {isJustCast && (
+                            <div
+                              key={castSeq}
+                              aria-hidden="true"
+                              className="pointer-events-none absolute inset-0 overflow-hidden rounded-lg"
+                            >
+                              <div
+                                className={`absolute inset-y-0 -left-1/3 w-2/3 animate-cast-sheen ${
+                                  spell.isConcentration
+                                    ? "bg-gradient-to-r from-transparent via-sienna/14 dark:via-brass/18 to-transparent"
+                                    : "bg-gradient-to-r from-transparent via-lapis/14 dark:via-lapis-dark/18 to-transparent"
+                                }`}
+                              />
+                              <div
+                                className={`absolute inset-0 rounded-lg border animate-cast-ring ${
+                                  spell.isConcentration
+                                    ? "border-sienna dark:border-brass"
+                                    : "border-lapis dark:border-lapis-dark"
+                                }`}
+                              />
+                            </div>
+                          )}
+
+                          {/* Top Row: Metadata, Title, Secondary Icons */}
+                          <div className="flex items-start justify-between gap-2.5">
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="flex items-center gap-1.5 text-xs text-ink-muted dark:text-ash">
+                                {isKnown ? (
+                                  <span className="inline-flex items-center gap-1 font-medium text-sienna dark:text-brass">
+                                    <Lock className="w-3 h-3" />
+                                    Known
+                                  </span>
+                                ) : (
+                                  <span className="font-medium text-lapis dark:text-lapis-dark">
+                                    Rolled
+                                  </span>
+                                )}
+                                <span aria-hidden="true">·</span>
+                                <span className="truncate">
+                                  {spell.schoolBase}
                                 </span>
-                              ) : (
-                                <span className="font-medium text-lapis dark:text-lapis-dark">
-                                  Rolled
-                                </span>
-                              )}
-                              <span aria-hidden="true">·</span>
-                              <span className="truncate">{spell.schoolBase}</span>
-                              {spell.isConcentration && (
-                                <>
-                                  <span aria-hidden="true">·</span>
-                                  <span>Conc.</span>
-                                </>
-                              )}
-                              {spell.isRitual && (
-                                <>
-                                  <span aria-hidden="true">·</span>
-                                  <span>Ritual</span>
-                                </>
-                              )}
+                                {isConcentrating ? (
+                                  <>
+                                    <span aria-hidden="true">·</span>
+                                    <span className="font-medium text-sienna dark:text-brass whitespace-nowrap">
+                                      Concentrating
+                                    </span>
+                                  </>
+                                ) : (
+                                  spell.isConcentration && (
+                                    <>
+                                      <span aria-hidden="true">·</span>
+                                      <span>Conc.</span>
+                                    </>
+                                  )
+                                )}
+                                {spell.isRitual && (
+                                  <>
+                                    <span aria-hidden="true">·</span>
+                                    <span>Ritual</span>
+                                  </>
+                                )}
+                              </div>
+
+                              <h3 className="font-serif text-lg font-semibold text-ink dark:text-parchment truncate group-hover:text-lapis dark:group-hover:text-lapis-dark transition-colors">
+                                {spell.name}
+                              </h3>
                             </div>
 
-                            <h3 className="font-serif text-lg font-semibold text-ink dark:text-parchment truncate group-hover:text-lapis dark:group-hover:text-lapis-dark transition-colors">
-                              {spell.name}
-                            </h3>
+                            <div
+                              className="flex items-center gap-0.5 shrink-0"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {!isKnown && (
+                                <button
+                                  type="button"
+                                  onClick={() => onRerollSingle(spell.name)}
+                                  title={`Reroll ${spell.name}`}
+                                  aria-label={`Reroll ${spell.name}`}
+                                  className="h-8 w-8 inline-flex items-center justify-center rounded-md text-ink-muted dark:text-ash hover:text-lapis dark:hover:text-lapis-dark hover:bg-linen dark:hover:bg-obsidian transition-colors"
+                                >
+                                  <RefreshCw className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => onToggleKnown(spell.name)}
+                                title={
+                                  isKnown
+                                    ? `Remove ${spell.name} from known spells`
+                                    : `Lock ${spell.name} as a known spell`
+                                }
+                                aria-label={
+                                  isKnown
+                                    ? `Remove ${spell.name} from known spells`
+                                    : `Lock ${spell.name} as a known spell`
+                                }
+                                className={`h-8 w-8 inline-flex items-center justify-center rounded-md transition-colors ${
+                                  isKnown
+                                    ? "text-sienna dark:text-brass hover:bg-paper dark:hover:bg-obsidian"
+                                    : "text-ink-muted dark:text-ash hover:text-sienna dark:hover:text-brass hover:bg-linen dark:hover:bg-soot"
+                                }`}
+                              >
+                                {isKnown ? (
+                                  <Lock className="w-3.5 h-3.5" />
+                                ) : (
+                                  <Unlock className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            </div>
+                          </div>
 
-                            <p className="text-xs text-ink-muted dark:text-ash truncate">
+                          {/* Bottom Row: Spell Timing Metadata + Quick Cast */}
+                          <div className="flex items-center justify-between gap-3 pt-2.5 border-t border-limestone/60 dark:border-charcoal-border/60">
+                            <p className="text-xs text-ink-muted dark:text-ash truncate min-w-0">
                               {spell.castingTime}
                               {spell.range ? ` · ${spell.range}` : ""}
                               {spell.duration ? ` · ${spell.duration}` : ""}
                             </p>
-                          </div>
 
-                          <div
-                            className="flex items-center gap-1 shrink-0"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            {!isKnown && (
+                            <div
+                              className="flex items-center gap-1.5 shrink-0"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {showSideRitualButton && (
+                                <button
+                                  type="button"
+                                  onClick={() => triggerCardCast(spell, null)}
+                                  title={`Cast ${spell.name} as a ritual (no slot used)`}
+                                  aria-label={`Cast ${spell.name} as a ritual`}
+                                  className="h-8 px-2.5 inline-flex items-center rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-xs font-medium text-ink-muted dark:text-ash hover:border-lapis hover:text-lapis dark:hover:border-lapis-dark dark:hover:text-lapis-dark active:scale-[0.95] transition-all duration-150 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lapis dark:focus-visible:ring-lapis-dark"
+                                >
+                                  Ritual
+                                </button>
+                              )}
                               <button
                                 type="button"
-                                onClick={() => onRerollSingle(spell.name)}
-                                title={`Reroll ${spell.name}`}
-                                aria-label={`Reroll ${spell.name}`}
-                                className="h-9 w-9 inline-flex items-center justify-center rounded-md text-ink-muted dark:text-ash hover:text-lapis dark:hover:text-lapis-dark hover:bg-linen dark:hover:bg-obsidian transition-colors"
+                                disabled={!canQuickCast}
+                                onClick={() => {
+                                  if (!canQuickCast) return;
+                                  triggerCardCast(spell, quickCastSlotLevel);
+                                }}
+                                title={castButtonTitle}
+                                aria-label={castButtonTitle}
+                                className={`h-8 px-2.5 inline-flex items-center gap-1.5 rounded-md border text-xs font-medium transition-all duration-150 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lapis dark:focus-visible:ring-lapis-dark ${
+                                  isJustCast
+                                    ? spell.isConcentration
+                                      ? "bg-sienna text-white border-sienna dark:bg-brass dark:text-obsidian dark:border-brass"
+                                      : "bg-lapis text-white border-lapis dark:bg-lapis-dark dark:text-obsidian dark:border-lapis-dark"
+                                    : !canQuickCast
+                                    ? "border-limestone/70 dark:border-charcoal-border/70 text-ink-muted/55 dark:text-ash/45 bg-transparent cursor-not-allowed"
+                                    : quickCastMode === "upcast"
+                                    ? "border-sienna/35 dark:border-brass/40 bg-paper dark:bg-obsidian text-sienna dark:text-brass hover:bg-sienna hover:text-white hover:border-sienna dark:hover:bg-brass dark:hover:text-obsidian dark:hover:border-brass active:scale-[0.95]"
+                                    : "border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-ink dark:text-parchment hover:border-lapis hover:text-lapis dark:hover:border-lapis-dark dark:hover:text-lapis-dark active:scale-[0.95]"
+                                }`}
                               >
-                                <RefreshCw className="w-4 h-4" />
+                                {isJustCast ? (
+                                  <Check className="w-3.5 h-3.5 animate-cast-check-pop" />
+                                ) : (
+                                  <Wand2 className="w-3.5 h-3.5" />
+                                )}
+                                <span>{castButtonLabel}</span>
                               </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => onToggleKnown(spell.name)}
-                              title={
-                                isKnown
-                                  ? `Remove ${spell.name} from known spells`
-                                  : `Lock ${spell.name} as a known spell`
-                              }
-                              aria-label={
-                                isKnown
-                                  ? `Remove ${spell.name} from known spells`
-                                  : `Lock ${spell.name} as a known spell`
-                              }
-                              className={`h-9 w-9 inline-flex items-center justify-center rounded-md transition-colors ${
-                                isKnown
-                                  ? "text-sienna dark:text-brass hover:bg-paper dark:hover:bg-obsidian"
-                                  : "text-ink-muted dark:text-ash hover:text-sienna dark:hover:text-brass hover:bg-linen dark:hover:bg-soot"
-                              }`}
-                            >
-                              {isKnown ? (
-                                <Lock className="w-4 h-4" />
-                              ) : (
-                                <Unlock className="w-4 h-4" />
-                              )}
-                            </button>
+                            </div>
                           </div>
                         </article>
                       );
@@ -507,126 +796,234 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
         )}
       </div>
 
-      {/* Right Summary Rail: Quick Roll Controls & Active Rules Snapshot */}
-      <aside className="lg:col-span-4 lg:sticky lg:top-24 border border-limestone dark:border-charcoal-border rounded-lg bg-linen/60 dark:bg-soot p-6 space-y-6">
-        <div className="flex items-center justify-between gap-2 pb-4 border-b border-limestone dark:border-charcoal-border">
-          <h2 className="font-serif text-lg font-semibold text-ink dark:text-parchment">
-            Roll Configuration
-          </h2>
-          <button
-            type="button"
-            onClick={onOpenRules}
-            className="text-xs font-medium text-lapis dark:text-lapis-dark hover:underline whitespace-nowrap"
-          >
-            Edit Rules
-          </button>
-        </div>
-
-        {/* Quick Caster Level Stepper */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-ink-muted dark:text-ash">
-              Caster Level
-            </span>
-            <span className="text-xs font-mono tabular-nums text-ink-muted dark:text-ash">
-              Unlocks up to {activeLevelMeta?.shortLabel}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
+      {/* Right Summary Rail: Quick Roll Controls & Roll History */}
+      <div className="lg:col-span-4 lg:sticky lg:top-24 space-y-6">
+        <aside className="border border-limestone dark:border-charcoal-border rounded-lg bg-linen/60 dark:bg-soot p-6 space-y-6">
+          <div className="flex items-center justify-between gap-2 pb-4 border-b border-limestone dark:border-charcoal-border">
+            <h2 className="font-serif text-lg font-semibold text-ink dark:text-parchment">
+              Roll Configuration
+            </h2>
             <button
               type="button"
-              onClick={() => handleQuickCasterLevelChange(config.casterLevel - 1)}
-              disabled={config.casterLevel <= 1}
-              aria-label="Decrease caster level"
-              className="h-10 w-10 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-ink dark:text-parchment font-mono text-base hover:bg-linen dark:hover:bg-soot disabled:opacity-40 transition-colors"
+              onClick={onOpenRules}
+              className="text-xs font-medium text-lapis dark:text-lapis-dark hover:underline whitespace-nowrap"
             >
-              −
+              Edit Rules
             </button>
-            <div className="flex-1 h-10 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian flex items-center justify-center font-mono tabular-nums text-sm font-semibold text-ink dark:text-parchment">
-              Level {config.casterLevel}
+          </div>
+
+          {/* Quick Caster Level Stepper */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-ink-muted dark:text-ash">
+                Caster Level
+              </span>
+              <span className="text-xs font-mono tabular-nums text-ink-muted dark:text-ash">
+                Unlocks up to {activeLevelMeta?.shortLabel}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleQuickCasterLevelChange(config.casterLevel - 1)}
+                disabled={config.casterLevel <= 1}
+                aria-label="Decrease caster level"
+                className="h-10 w-10 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-ink dark:text-parchment font-mono text-base hover:bg-linen dark:hover:bg-soot disabled:opacity-40 transition-colors"
+              >
+                −
+              </button>
+              <div className="flex-1 h-10 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian flex items-center justify-center font-mono tabular-nums text-sm font-semibold text-ink dark:text-parchment">
+                Level {config.casterLevel}
+              </div>
+              <button
+                type="button"
+                onClick={() => handleQuickCasterLevelChange(config.casterLevel + 1)}
+                disabled={config.casterLevel >= 20}
+                aria-label="Increase caster level"
+                className="h-10 w-10 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-ink dark:text-parchment font-mono text-base hover:bg-linen dark:hover:bg-soot disabled:opacity-40 transition-colors"
+              >
+                +
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Ritual Casting Toggle */}
+          <div className="flex items-center justify-between gap-3 py-2.5 border-y border-limestone/80 dark:border-charcoal-border/80">
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-ink dark:text-parchment">
+                Ritual Casting
+              </p>
+              <p className="text-[11px] text-ink-muted dark:text-ash">
+                {config.canRitualCast
+                  ? "Can cast ritual spells without a slot"
+                  : "Off — rituals require a spell slot"}
+              </p>
             </div>
             <button
               type="button"
-              onClick={() => handleQuickCasterLevelChange(config.casterLevel + 1)}
-              disabled={config.casterLevel >= 20}
-              aria-label="Increase caster level"
-              className="h-10 w-10 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-ink dark:text-parchment font-mono text-base hover:bg-linen dark:hover:bg-soot disabled:opacity-40 transition-colors"
+              role="switch"
+              aria-checked={config.canRitualCast}
+              aria-label="Toggle ritual casting"
+              onClick={() =>
+                onUpdateConfig({
+                  ...config,
+                  canRitualCast: !config.canRitualCast,
+                })
+              }
+              className={`relative shrink-0 w-10 h-6 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lapis dark:focus-visible:ring-lapis-dark ${
+                config.canRitualCast
+                  ? "bg-lapis dark:bg-lapis-dark"
+                  : "bg-limestone dark:bg-charcoal-border"
+              }`}
             >
-              +
+              <span
+                className={`block w-4 h-4 rounded-full bg-paper dark:bg-obsidian transition-transform ${
+                  config.canRitualCast ? "translate-x-5" : "translate-x-1"
+                }`}
+              />
             </button>
           </div>
-        </div>
 
-        {/* Active Per-Level Quota Breakdown */}
-        <div className="space-y-2.5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-ink-muted dark:text-ash">
-              Spells Per Roll
-            </span>
-            <span className="text-xs font-mono tabular-nums font-medium text-ink dark:text-parchment">
-              {totalPlannedRolls} total
-            </span>
+          {/* Active Per-Level Quota Breakdown */}
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-ink-muted dark:text-ash">
+                Spells Per Roll
+              </span>
+              <span className="text-xs font-mono tabular-nums font-medium text-ink dark:text-parchment">
+                {totalPlannedRolls} total
+              </span>
+            </div>
+
+            <div className="divide-y divide-limestone/70 dark:divide-charcoal-border/70 border-y border-limestone dark:border-charcoal-border">
+              {SPELL_LEVELS.slice(0, config.maxSpellLevel + 1).map((lvl) => {
+                const count = Number(config.levelCounts[lvl.key] ?? 0);
+                return (
+                  <div
+                    key={lvl.key}
+                    className="py-1.5 flex items-center justify-between text-xs"
+                  >
+                    <span className="text-ink-muted dark:text-ash">
+                      {lvl.shortLabel}
+                      {lvl.index > 0 ? " Level" : ""}
+                    </span>
+                    <span className="font-mono tabular-nums font-medium text-ink dark:text-parchment">
+                      {count === 0 ? "Skip" : `${count}`}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
-          <div className="divide-y divide-limestone/70 dark:divide-charcoal-border/70 border-y border-limestone dark:border-charcoal-border">
-            {SPELL_LEVELS.slice(0, config.maxSpellLevel + 1).map((lvl) => {
-              const count = Number(config.levelCounts[lvl.key] ?? 0);
-              return (
-                <div
-                  key={lvl.key}
-                  className="py-1.5 flex items-center justify-between text-xs"
-                >
-                  <span className="text-ink-muted dark:text-ash">
-                    {lvl.shortLabel}
-                    {lvl.index > 0 ? " Level" : ""}
-                  </span>
-                  <span className="font-mono tabular-nums font-medium text-ink dark:text-parchment">
-                    {count === 0 ? "Skip" : `${count}`}
-                  </span>
-                </div>
-              );
-            })}
+          {/* Active Filter Constraints Summary */}
+          <div className="space-y-2 text-xs text-ink-muted dark:text-ash">
+            <p className="font-medium text-ink dark:text-parchment">
+              Active Odds &amp; Filters
+            </p>
+            <p className="leading-relaxed">
+              <span className="text-ink dark:text-parchment font-medium">
+                Classes:{" "}
+              </span>
+              {summarizeWeights(DND_CLASSES, config.classWeights, "classes")}
+            </p>
+            <p className="leading-relaxed">
+              <span className="text-ink dark:text-parchment font-medium">
+                Schools:{" "}
+              </span>
+              {summarizeWeights(MAGIC_SCHOOLS, config.schoolWeights, "schools")}
+            </p>
+            <p className="leading-relaxed">
+              <span className="text-ink dark:text-parchment font-medium">
+                Exclusions:{" "}
+              </span>
+              {[
+                config.excludeWeaponComponents ? "Weapon components" : null,
+                config.excludeCostlyMaterials ? "Costly materials" : null,
+                config.excludeConcentration ? "Concentration" : null,
+                config.excludeRituals ? "Rituals" : null,
+                config.excludedSources.length > 0
+                  ? `${config.excludedSources.length} sourcebooks`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ") || "None"}
+            </p>
+            <p className="pt-1 font-mono tabular-nums text-ink dark:text-parchment">
+              {eligiblePoolCount} eligible spells in pool
+            </p>
           </div>
-        </div>
+        </aside>
 
-        {/* Active Filter Constraints Summary */}
-        <div className="space-y-2 text-xs text-ink-muted dark:text-ash">
-          <p className="font-medium text-ink dark:text-parchment">
-            Active Odds &amp; Filters
-          </p>
-          <p className="leading-relaxed">
-            <span className="text-ink dark:text-parchment font-medium">
-              Classes:{" "}
-            </span>
-            {summarizeWeights(DND_CLASSES, config.classWeights, "classes")}
-          </p>
-          <p className="leading-relaxed">
-            <span className="text-ink dark:text-parchment font-medium">
-              Schools:{" "}
-            </span>
-            {summarizeWeights(MAGIC_SCHOOLS, config.schoolWeights, "schools")}
-          </p>
-          <p className="leading-relaxed">
-            <span className="text-ink dark:text-parchment font-medium">
-              Exclusions:{" "}
-            </span>
-            {[
-              config.excludeWeaponComponents ? "Weapon components" : null,
-              config.excludeCostlyMaterials ? "Costly materials" : null,
-              config.excludeConcentration ? "Concentration" : null,
-              config.excludeRituals ? "Rituals" : null,
-              config.excludedSources.length > 0
-                ? `${config.excludedSources.length} sourcebooks`
-                : null,
-            ]
-              .filter(Boolean)
-              .join(" · ") || "None"}
-          </p>
-          <p className="pt-1 font-mono tabular-nums text-ink dark:text-parchment">
-            {eligiblePoolCount} eligible spells in pool
-          </p>
-        </div>
-      </aside>
+        {/* Recent Roll History */}
+        {rollHistory.length > 0 && (
+          <aside className="border border-limestone dark:border-charcoal-border rounded-lg bg-linen/60 dark:bg-soot p-6 space-y-4">
+            <div className="flex items-center justify-between gap-2 pb-3 border-b border-limestone dark:border-charcoal-border">
+              <div className="flex items-center gap-2">
+                <History className="w-4 h-4 text-ink-muted dark:text-ash" />
+                <h2 className="font-serif text-lg font-semibold text-ink dark:text-parchment">
+                  Roll History
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={onClearRollHistory}
+                className="text-xs font-medium text-ink-muted dark:text-ash hover:text-sienna dark:hover:text-brass hover:underline whitespace-nowrap"
+              >
+                Clear
+              </button>
+            </div>
+
+            <div className="divide-y divide-limestone/70 dark:divide-charcoal-border/70">
+              {(showAllHistory ? rollHistory : rollHistory.slice(0, 3)).map(
+                (entry) => {
+                  const previewNames = entry.rolledSpellNames.slice(0, 3);
+                  const extraCount =
+                    entry.rolledSpellNames.length - previewNames.length;
+                  return (
+                    <div
+                      key={entry.id}
+                      className="py-3 first:pt-0 last:pb-0 space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-mono tabular-nums text-ink-muted dark:text-ash truncate">
+                          {formatHistoryTimestamp(entry.rolledAt)} ·{" "}
+                          {entry.rolledSpellNames.length} spell
+                          {entry.rolledSpellNames.length === 1 ? "" : "s"}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => onRestoreRollHistory(entry.id)}
+                          className="h-7 px-2.5 inline-flex items-center gap-1 rounded border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-xs font-medium text-ink dark:text-parchment hover:border-lapis dark:hover:border-lapis-dark hover:text-lapis dark:hover:text-lapis-dark transition-colors whitespace-nowrap shrink-0"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          <span>Restore</span>
+                        </button>
+                      </div>
+                      <p className="text-xs text-ink-muted dark:text-ash truncate">
+                        {previewNames.join(", ")}
+                        {extraCount > 0 ? ` +${extraCount} more` : ""}
+                      </p>
+                    </div>
+                  );
+                }
+              )}
+            </div>
+
+            {rollHistory.length > 3 && (
+              <button
+                type="button"
+                onClick={() => setShowAllHistory((prev) => !prev)}
+                className="w-full pt-2 border-t border-limestone dark:border-charcoal-border text-xs font-medium text-lapis dark:text-lapis-dark hover:underline text-left"
+              >
+                {showAllHistory
+                  ? "Show fewer"
+                  : `Show all (${rollHistory.length})`}
+              </button>
+            )}
+          </aside>
+        )}
+      </div>
     </div>
   );
 };

@@ -12,25 +12,36 @@ import {
   GrimoireSnapshot,
   LevelShortfall,
   RandomizerConfig,
+  RollHistoryEntry,
   Spell,
+  SpellSlotState,
   StoredRingSpell,
   ThemeMode,
 } from "./types/spell";
 import {
+  createZeroSlotMap,
   CUSTOM_CATALOG_KEY,
   DEFAULT_CONFIG,
+  DEFAULT_SPELL_SLOTS,
+  getDefaultSpellSlots,
   LOCAL_STORAGE_KEY,
+  SPELL_LEVELS,
   THEME_STORAGE_KEY,
 } from "./lib/constants";
 import {
   filterSpellPool,
+  getEffectiveMaxSlots,
   getRingUsedLevels,
+  MAX_ROLL_HISTORY,
   parseSpellsCSV,
   rerollSingleSpell,
   RING_MAX_LEVELS,
   rollRandomSpells,
+  sanitizeConcentrationSpell,
   sanitizeConfig,
   sanitizeRingSpells,
+  sanitizeRollHistory,
+  sanitizeSpellSlots,
   sanitizeStringList,
   validateImportPayload,
 } from "./lib/spellEngine";
@@ -57,6 +68,41 @@ interface ToastMessage {
   onAction?: () => void;
 }
 
+function areSpellListsEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].toLowerCase() !== b[i].toLowerCase()) return false;
+  }
+  return true;
+}
+
+function pushRollSnapshot(
+  history: RollHistoryEntry[],
+  names: string[]
+): RollHistoryEntry[] {
+  if (names.length === 0) return history;
+  if (
+    history.length > 0 &&
+    areSpellListsEqual(history[0].rolledSpellNames, names)
+  ) {
+    return history;
+  }
+  const entry: RollHistoryEntry = {
+    id: `roll-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    rolledSpellNames: [...names],
+    rolledAt: new Date().toISOString(),
+  };
+  return [entry, ...history].slice(0, MAX_ROLL_HISTORY);
+}
+
+function cloneSlotState(slots: SpellSlotState): SpellSlotState {
+  return {
+    useCustomMax: slots.useCustomMax,
+    max: { ...slots.max },
+    used: { ...slots.used },
+  };
+}
+
 function getInitialTheme(): ThemeMode {
   if (typeof window === "undefined") return "light";
   const stored = localStorage.getItem(THEME_STORAGE_KEY);
@@ -66,37 +112,45 @@ function getInitialTheme(): ThemeMode {
     : "light";
 }
 
+function createEmptyLocalSnapshot(): GrimoireSnapshot {
+  return {
+    knownSpellNames: [],
+    rolledSpellNames: [],
+    ringSpells: [],
+    spellSlots: cloneSlotState(DEFAULT_SPELL_SLOTS),
+    concentrationSpell: null,
+    rollHistory: [],
+    config: { ...DEFAULT_CONFIG },
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 function loadLocalSnapshot(): GrimoireSnapshot {
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (!raw) {
-      return {
-        knownSpellNames: [],
-        rolledSpellNames: [],
-        ringSpells: [],
-        config: { ...DEFAULT_CONFIG },
-        updatedAt: new Date().toISOString(),
-      };
+      return createEmptyLocalSnapshot();
     }
     const parsed = JSON.parse(raw);
+    const cleanConfig = sanitizeConfig(parsed.config);
     return {
       knownSpellNames: sanitizeStringList(parsed.knownSpellNames, 400),
       rolledSpellNames: sanitizeStringList(parsed.rolledSpellNames, 100),
       ringSpells: sanitizeRingSpells(parsed.ringSpells),
-      config: sanitizeConfig(parsed.config),
+      spellSlots: sanitizeSpellSlots(
+        parsed.spellSlots,
+        cleanConfig.casterLevel
+      ),
+      concentrationSpell: sanitizeConcentrationSpell(parsed.concentrationSpell),
+      rollHistory: sanitizeRollHistory(parsed.rollHistory),
+      config: cleanConfig,
       updatedAt:
         typeof parsed.updatedAt === "string"
           ? parsed.updatedAt
           : new Date().toISOString(),
     };
   } catch {
-    return {
-      knownSpellNames: [],
-      rolledSpellNames: [],
-      ringSpells: [],
-      config: { ...DEFAULT_CONFIG },
-      updatedAt: new Date().toISOString(),
-    };
+    return createEmptyLocalSnapshot();
   }
 }
 
@@ -112,7 +166,7 @@ export default function App() {
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [isCustomCatalog, setIsCustomCatalog] = useState(false);
 
-  // Spellbook & Ring State
+  // Spellbook, Slots, History & Ring State
   const [knownSpellNames, setKnownSpellNames] = useState<string[]>(
     initialLocal.knownSpellNames
   );
@@ -122,9 +176,22 @@ export default function App() {
   const [ringSpells, setRingSpells] = useState<StoredRingSpell[]>(
     initialLocal.ringSpells
   );
+  const [spellSlots, setSpellSlots] = useState<SpellSlotState>(
+    initialLocal.spellSlots
+  );
+  const [concentrationSpell, setConcentrationSpell] = useState<string | null>(
+    initialLocal.concentrationSpell
+  );
+  const [rollHistory, setRollHistory] = useState<RollHistoryEntry[]>(
+    initialLocal.rollHistory
+  );
   const [config, setConfig] = useState<RandomizerConfig>(initialLocal.config);
   const [shortfalls, setShortfalls] = useState<LevelShortfall[]>([]);
   const [selectedSpell, setSelectedSpell] = useState<Spell | null>(null);
+  const [lastSlotFlash, setLastSlotFlash] = useState<{
+    level: number;
+    seq: number;
+  } | null>(null);
 
   // Cloud Auth & Sync State
   const [cloudSyncAvailable, setCloudSyncAvailable] = useState<boolean>(
@@ -204,12 +271,43 @@ export default function App() {
     loadBundledCatalog();
   }, [loadBundledCatalog]);
 
+  // Keep default spell slot table aligned with casterLevel when not customized
+  useEffect(() => {
+    setSpellSlots((prev) => {
+      if (prev.useCustomMax) return prev;
+      const nextMax = getDefaultSpellSlots(config.casterLevel);
+      let changed = false;
+      const nextUsed: Record<string, number> = { ...prev.used };
+      for (let lvl = 1; lvl <= 9; lvl++) {
+        const key = String(lvl);
+        if (prev.max[key] !== nextMax[key]) changed = true;
+        const clampedUsed = Math.min(
+          nextMax[key] ?? 0,
+          Math.max(0, prev.used[key] ?? 0)
+        );
+        if (clampedUsed !== (prev.used[key] ?? 0)) {
+          nextUsed[key] = clampedUsed;
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      return {
+        useCustomMax: false,
+        max: nextMax,
+        used: nextUsed,
+      };
+    });
+  }, [config.casterLevel]);
+
   // Persist local state automatically
   useEffect(() => {
     const snapshot: GrimoireSnapshot = {
       knownSpellNames,
       rolledSpellNames,
       ringSpells,
+      spellSlots,
+      concentrationSpell,
+      rollHistory,
       config,
       updatedAt: new Date().toISOString(),
     };
@@ -218,7 +316,15 @@ export default function App() {
     } catch (err) {
       console.error("Failed to save state locally:", err);
     }
-  }, [knownSpellNames, rolledSpellNames, ringSpells, config]);
+  }, [
+    knownSpellNames,
+    rolledSpellNames,
+    ringSpells,
+    spellSlots,
+    concentrationSpell,
+    rollHistory,
+    config,
+  ]);
 
   // Validate Firestore connection once on boot & subscribe to auth state
   useEffect(() => {
@@ -265,6 +371,9 @@ export default function App() {
             setKnownSpellNames(cloudSave.knownSpellNames);
             setRolledSpellNames(cloudSave.rolledSpellNames);
             setRingSpells(cloudSave.ringSpells);
+            setSpellSlots(cloudSave.spellSlots);
+            setConcentrationSpell(cloudSave.concentrationSpell);
+            setRollHistory(cloudSave.rollHistory);
             setConfig(cloudSave.config);
             showToast("Loaded saved spells from Google Cloud.");
           }
@@ -313,33 +422,66 @@ export default function App() {
       showToast("No spell catalog loaded yet.");
       return;
     }
+    const previousRolled = [...rolledSpellNames];
+    const previousShortfalls = [...shortfalls];
+    const previousHistory = [...rollHistory];
+
     const result = rollRandomSpells(catalog, knownSpellNames, config);
+    const nextHistory =
+      previousRolled.length > 0
+        ? pushRollSnapshot(rollHistory, previousRolled)
+        : rollHistory;
+
     setRolledSpellNames(result.rolledNames);
     setShortfalls(result.shortfalls);
+    setRollHistory(nextHistory);
+
     if (activeView !== "spellbook") {
       setActiveView("spellbook");
     }
+
+    const undoRoll = () => {
+      setRolledSpellNames(previousRolled);
+      setShortfalls(previousShortfalls);
+      setRollHistory(previousHistory);
+    };
+
     if (result.rolledNames.length === 0) {
-      showToast("No spells rolled — check your level quotas or filters.");
+      if (previousRolled.length > 0) {
+        showToast(
+          "No spells rolled — check your level quotas or filters.",
+          "Undo",
+          undoRoll
+        );
+      } else {
+        showToast("No spells rolled — check your level quotas or filters.");
+      }
     } else {
       showToast(
         `Rolled ${result.rolledNames.length} spell${
           result.rolledNames.length === 1 ? "" : "s"
-        }.`
+        }.`,
+        "Undo",
+        undoRoll
       );
     }
   };
 
   const handleClearRolled = () => {
     const previous = [...rolledSpellNames];
+    const previousShortfalls = [...shortfalls];
     setRolledSpellNames([]);
     setShortfalls([]);
     showToast("Cleared rolled spells.", "Undo", () => {
       setRolledSpellNames(previous);
+      setShortfalls(previousShortfalls);
     });
   };
 
   const handleRerollSingle = (spellName: string) => {
+    const previousRolled = [...rolledSpellNames];
+    const previousSelected = selectedSpell;
+
     const { nextRolledNames, replacedSpell } = rerollSingleSpell(
       catalog,
       knownSpellNames,
@@ -356,13 +498,60 @@ export default function App() {
     }
 
     setRolledSpellNames(nextRolledNames);
-    if (
+    const wasSelected = Boolean(
       selectedSpell &&
-      selectedSpell.name.toLowerCase() === spellName.toLowerCase()
-    ) {
+        selectedSpell.name.toLowerCase() === spellName.toLowerCase()
+    );
+    if (wasSelected) {
       setSelectedSpell(replacedSpell);
     }
-    showToast(`Rerolled ${spellName} → ${replacedSpell.name}`);
+    showToast(`Rerolled ${spellName} → ${replacedSpell.name}`, "Undo", () => {
+      setRolledSpellNames(previousRolled);
+      if (wasSelected && previousSelected) {
+        setSelectedSpell((current) =>
+          current &&
+          current.name.toLowerCase() === replacedSpell.name.toLowerCase()
+            ? previousSelected
+            : current
+        );
+      }
+    });
+  };
+
+  const handleRestoreRollHistory = (entryId: string) => {
+    const target = rollHistory.find((entry) => entry.id === entryId);
+    if (!target) return;
+
+    const previousRolled = [...rolledSpellNames];
+    const previousHistory = [...rollHistory];
+    const remainingHistory = rollHistory.filter((entry) => entry.id !== entryId);
+    const nextHistory =
+      previousRolled.length > 0
+        ? pushRollSnapshot(remainingHistory, previousRolled)
+        : remainingHistory;
+
+    setRolledSpellNames(target.rolledSpellNames);
+    setShortfalls([]);
+    setRollHistory(nextHistory);
+
+    showToast(
+      `Restored ${target.rolledSpellNames.length} rolled spell${
+        target.rolledSpellNames.length === 1 ? "" : "s"
+      }.`,
+      "Undo",
+      () => {
+        setRolledSpellNames(previousRolled);
+        setRollHistory(previousHistory);
+      }
+    );
+  };
+
+  const handleClearRollHistory = () => {
+    const previousHistory = [...rollHistory];
+    setRollHistory([]);
+    showToast("Cleared roll history.", "Undo", () => {
+      setRollHistory(previousHistory);
+    });
   };
 
   const handleToggleKnown = (spellName: string) => {
@@ -397,6 +586,186 @@ export default function App() {
       prev.filter((n) => n.toLowerCase() !== lower)
     );
     showToast(`Added ${spellName} to Known Spells.`);
+  };
+
+  const triggerSlotFlash = (level: number) => {
+    const seq = Date.now() + Math.random();
+    setLastSlotFlash({ level, seq });
+    window.setTimeout(() => {
+      setLastSlotFlash((curr) => (curr?.seq === seq ? null : curr));
+    }, 650);
+  };
+
+  // Spell Slot & Concentration Handlers
+  const handleExpendSlot = (level: number) => {
+    const key = String(level);
+    const effectiveMax = getEffectiveMaxSlots(spellSlots, config.casterLevel);
+    const max = effectiveMax[key] ?? 0;
+    const currentUsed = Math.min(max, Math.max(0, spellSlots.used[key] ?? 0));
+    if (currentUsed >= max) return;
+
+    setSpellSlots((prev) => ({
+      ...prev,
+      used: {
+        ...prev.used,
+        [key]: currentUsed + 1,
+      },
+    }));
+    triggerSlotFlash(level);
+  };
+
+  const handleRecoverSlot = (level: number) => {
+    const key = String(level);
+    setSpellSlots((prev) => {
+      const currentUsed = prev.used[key] ?? 0;
+      if (currentUsed <= 0) return prev;
+      return {
+        ...prev,
+        used: {
+          ...prev.used,
+          [key]: currentUsed - 1,
+        },
+      };
+    });
+  };
+
+  const handleSetCustomMaxSlot = (level: number, nextMax: number) => {
+    const key = String(level);
+    const clamped = Math.max(0, Math.min(9, Math.round(nextMax)));
+    setSpellSlots((prev) => {
+      const baseMax = getEffectiveMaxSlots(prev, config.casterLevel);
+      const updatedMax = {
+        ...baseMax,
+        [key]: clamped,
+      };
+      const updatedUsed = {
+        ...prev.used,
+        [key]: Math.min(clamped, Math.max(0, prev.used[key] ?? 0)),
+      };
+      return {
+        useCustomMax: true,
+        max: updatedMax,
+        used: updatedUsed,
+      };
+    });
+  };
+
+  const handleResetSlotDefaults = () => {
+    const nextMax = getDefaultSpellSlots(config.casterLevel);
+    setSpellSlots((prev) => {
+      const nextUsed: Record<string, number> = {};
+      for (let lvl = 1; lvl <= 9; lvl++) {
+        const key = String(lvl);
+        nextUsed[key] = Math.min(
+          nextMax[key] ?? 0,
+          Math.max(0, prev.used[key] ?? 0)
+        );
+      }
+      return {
+        useCustomMax: false,
+        max: nextMax,
+        used: nextUsed,
+      };
+    });
+    showToast(`Reset max slots to Level ${config.casterLevel} defaults.`);
+  };
+
+  const handleLongRest = () => {
+    const previousSlots = cloneSlotState(spellSlots);
+    const previousConc = concentrationSpell;
+
+    setSpellSlots((prev) => ({
+      ...prev,
+      used: createZeroSlotMap(),
+    }));
+    setConcentrationSpell(null);
+
+    const msg = previousConc
+      ? `Long rest complete — slots restored and dropped ${previousConc}.`
+      : "Long rest complete — all spell slots restored.";
+    showToast(msg, "Undo", () => {
+      setSpellSlots(previousSlots);
+      setConcentrationSpell(previousConc);
+    });
+  };
+
+  const handleSetConcentration = (spellName: string | null) => {
+    const previousConc = concentrationSpell;
+    setConcentrationSpell(spellName);
+
+    if (spellName) {
+      const replaced =
+        previousConc && previousConc.toLowerCase() !== spellName.toLowerCase();
+      showToast(
+        replaced
+          ? `Concentrating on ${spellName} (dropped ${previousConc}).`
+          : `Concentrating on ${spellName}.`,
+        "Undo",
+        () => setConcentrationSpell(previousConc)
+      );
+    } else if (previousConc) {
+      showToast(`Dropped concentration on ${previousConc}.`, "Undo", () =>
+        setConcentrationSpell(previousConc)
+      );
+    }
+  };
+
+  const handleDropConcentration = () => {
+    handleSetConcentration(null);
+  };
+
+  const handleCastSpell = (spell: Spell, slotLevel: number | null) => {
+    const previousSlots = cloneSlotState(spellSlots);
+    const previousConc = concentrationSpell;
+
+    if (slotLevel !== null) {
+      const key = String(slotLevel);
+      const effectiveMax = getEffectiveMaxSlots(spellSlots, config.casterLevel);
+      const max = effectiveMax[key] ?? 0;
+      const currentUsed = Math.min(max, Math.max(0, spellSlots.used[key] ?? 0));
+      if (currentUsed >= max) {
+        showToast(
+          `No ${SPELL_LEVELS[slotLevel]?.shortLabel}-level spell slots remaining.`
+        );
+        return;
+      }
+      setSpellSlots((prev) => ({
+        ...prev,
+        used: {
+          ...prev.used,
+          [key]: currentUsed + 1,
+        },
+      }));
+      triggerSlotFlash(slotLevel);
+    }
+
+    if (spell.isConcentration) {
+      setConcentrationSpell(spell.name);
+    }
+
+    const baseMessage =
+      spell.levelIndex === 0
+        ? `Cast ${spell.name} (cantrip).`
+        : slotLevel === null
+        ? `Cast ${spell.name} as a ritual.`
+        : `Cast ${spell.name} (${SPELL_LEVELS[slotLevel]?.shortLabel}-level slot).`;
+    const replacedConc =
+      spell.isConcentration &&
+      previousConc &&
+      previousConc.toLowerCase() !== spell.name.toLowerCase();
+    const fullMessage = replacedConc
+      ? `${baseMessage} Dropped ${previousConc}.`
+      : baseMessage;
+
+    const stateChanged = slotLevel !== null || spell.isConcentration;
+    if (stateChanged) {
+      showToast(fullMessage, "Undo", () => {
+        setSpellSlots(previousSlots);
+        setConcentrationSpell(previousConc);
+      });
+    } else {
+      showToast(fullMessage);
+    }
   };
 
   // Ring of Spell Storing Handlers
@@ -435,10 +804,28 @@ export default function App() {
   const handleCastRingSpell = (entryId: string) => {
     const target = ringSpells.find((s) => s.id === entryId);
     if (!target) return;
-    const previous = [...ringSpells];
+    const previousRing = [...ringSpells];
+    const previousConc = concentrationSpell;
+    const spellObj = catalogByName.get(target.spellName.toLowerCase());
+
     setRingSpells((prev) => prev.filter((s) => s.id !== entryId));
-    showToast(`Cast ${target.spellName} from the ring.`, "Undo", () => {
-      setRingSpells(previous);
+    if (spellObj?.isConcentration) {
+      setConcentrationSpell(spellObj.name);
+    }
+
+    const replacedConc =
+      spellObj?.isConcentration &&
+      previousConc &&
+      previousConc.toLowerCase() !== spellObj.name.toLowerCase();
+    const message = replacedConc
+      ? `Cast ${target.spellName} from the ring. Dropped ${previousConc}.`
+      : spellObj?.isConcentration
+      ? `Cast ${target.spellName} from the ring (concentrating).`
+      : `Cast ${target.spellName} from the ring.`;
+
+    showToast(message, "Undo", () => {
+      setRingSpells(previousRing);
+      setConcentrationSpell(previousConc);
     });
   };
 
@@ -510,6 +897,9 @@ export default function App() {
         knownSpellNames,
         rolledSpellNames,
         ringSpells,
+        spellSlots,
+        concentrationSpell,
+        rollHistory,
         config,
         updatedAt: new Date().toISOString(),
       });
@@ -539,6 +929,9 @@ export default function App() {
       setKnownSpellNames(cloudSave.knownSpellNames);
       setRolledSpellNames(cloudSave.rolledSpellNames);
       setRingSpells(cloudSave.ringSpells);
+      setSpellSlots(cloudSave.spellSlots);
+      setConcentrationSpell(cloudSave.concentrationSpell);
+      setRollHistory(cloudSave.rollHistory);
       setConfig(cloudSave.config);
       setShortfalls([]);
       const ts = new Date(cloudSave.updatedAt);
@@ -580,6 +973,9 @@ export default function App() {
       knownSpellNames,
       rolledSpellNames,
       ringSpells,
+      spellSlots,
+      concentrationSpell,
+      rollHistory,
       config,
       updatedAt: new Date().toISOString(),
     };
@@ -608,6 +1004,9 @@ export default function App() {
       setKnownSpellNames(validated.knownSpellNames);
       setRolledSpellNames(validated.rolledSpellNames);
       setRingSpells(validated.ringSpells);
+      setSpellSlots(validated.spellSlots);
+      setConcentrationSpell(validated.concentrationSpell);
+      setRollHistory(validated.rollHistory);
       setConfig(validated.config);
       setShortfalls([]);
       showToast("Restored backup from JSON.");
@@ -703,6 +1102,10 @@ export default function App() {
                 eligiblePoolCount={eligiblePool.length}
                 config={config}
                 shortfalls={shortfalls}
+                slotState={spellSlots}
+                concentrationSpell={concentrationSpell}
+                rollHistory={rollHistory}
+                lastSlotFlash={lastSlotFlash}
                 onRollAll={handleRollAll}
                 onClearRolled={handleClearRolled}
                 onRerollSingle={handleRerollSingle}
@@ -711,6 +1114,15 @@ export default function App() {
                 onOpenSpell={setSelectedSpell}
                 onUpdateConfig={setConfig}
                 onOpenRules={() => setActiveView("rules")}
+                onCastSpell={handleCastSpell}
+                onExpendSlot={handleExpendSlot}
+                onRecoverSlot={handleRecoverSlot}
+                onSetCustomMaxSlot={handleSetCustomMaxSlot}
+                onResetSlotDefaults={handleResetSlotDefaults}
+                onLongRest={handleLongRest}
+                onDropConcentration={handleDropConcentration}
+                onRestoreRollHistory={handleRestoreRollHistory}
+                onClearRollHistory={handleClearRollHistory}
               />
             )}
 
@@ -768,10 +1180,16 @@ export default function App() {
         isKnown={selectedIsKnown}
         isRolled={selectedIsRolled}
         ringRemainingLevels={ringRemainingLevels}
+        casterLevel={config.casterLevel}
+        canRitualCast={config.canRitualCast}
+        slotState={spellSlots}
+        concentrationSpell={concentrationSpell}
         onClose={() => setSelectedSpell(null)}
         onToggleKnown={handleToggleKnown}
         onReroll={handleRerollSingle}
         onQuickStoreInRing={handleQuickStoreInRing}
+        onCastSpell={handleCastSpell}
+        onSetConcentration={handleSetConcentration}
       />
 
       {/* Non-intrusive Toast Notification */}

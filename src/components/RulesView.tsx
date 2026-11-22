@@ -241,52 +241,89 @@ export const RulesView: React.FC<RulesViewProps> = ({
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-5 rounded-lg border border-limestone dark:border-charcoal-border bg-linen/60 dark:bg-soot">
-          <div className="space-y-2">
-            <label
-              htmlFor="caster-level-select"
-              className="block text-sm font-medium text-ink dark:text-parchment"
-            >
-              Caster Level (Full-Caster Progression)
-            </label>
-            <select
-              id="caster-level-select"
-              value={config.casterLevel}
-              onChange={(e) => handleCasterLevelChange(Number(e.target.value))}
-              className="w-full h-11 px-3.5 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-sm font-mono tabular-nums text-ink dark:text-parchment focus:outline-none focus:ring-2 focus:ring-lapis dark:focus:ring-lapis-dark"
-            >
-              {Array.from({ length: 20 }, (_, i) => i + 1).map((lvl) => {
-                const maxSpell = casterLevelToMaxSpellLevel(lvl);
-                return (
-                  <option key={lvl} value={lvl}>
-                    Level {lvl} (unlocks up to {SPELL_LEVELS[maxSpell].shortLabel})
+        <div className="p-5 rounded-lg border border-limestone dark:border-charcoal-border bg-linen/60 dark:bg-soot space-y-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-2">
+              <label
+                htmlFor="caster-level-select"
+                className="block text-sm font-medium text-ink dark:text-parchment"
+              >
+                Caster Level (Full-Caster Progression)
+              </label>
+              <select
+                id="caster-level-select"
+                value={config.casterLevel}
+                onChange={(e) => handleCasterLevelChange(Number(e.target.value))}
+                className="w-full h-11 px-3.5 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-sm font-mono tabular-nums text-ink dark:text-parchment focus:outline-none focus:ring-2 focus:ring-lapis dark:focus:ring-lapis-dark"
+              >
+                {Array.from({ length: 20 }, (_, i) => i + 1).map((lvl) => {
+                  const maxSpell = casterLevelToMaxSpellLevel(lvl);
+                  return (
+                    <option key={lvl} value={lvl}>
+                      Level {lvl} (unlocks up to {SPELL_LEVELS[maxSpell].shortLabel})
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label
+                htmlFor="max-spell-level-select"
+                className="block text-sm font-medium text-ink dark:text-parchment"
+              >
+                Highest Unlocked Spell Level (Override)
+              </label>
+              <select
+                id="max-spell-level-select"
+                value={config.maxSpellLevel}
+                onChange={(e) => handleMaxSpellLevelChange(Number(e.target.value))}
+                className="w-full h-11 px-3.5 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-sm font-mono tabular-nums text-ink dark:text-parchment focus:outline-none focus:ring-2 focus:ring-lapis dark:focus:ring-lapis-dark"
+              >
+                {SPELL_LEVELS.map((lvl) => (
+                  <option key={lvl.key} value={lvl.index}>
+                    {lvl.index === 0
+                      ? "Cantrips Only"
+                      : `Up to ${lvl.shortLabel} Level`}
                   </option>
-                );
-              })}
-            </select>
+                ))}
+              </select>
+            </div>
           </div>
 
-          <div className="space-y-2">
-            <label
-              htmlFor="max-spell-level-select"
-              className="block text-sm font-medium text-ink dark:text-parchment"
+          <div className="pt-4 border-t border-limestone dark:border-charcoal-border flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-ink dark:text-parchment">
+                Ritual Casting
+              </p>
+              <p className="text-xs text-ink-muted dark:text-ash mt-0.5 leading-relaxed">
+                Show ritual casting options that don&apos;t spend a spell slot (for Wizards, Clerics, Druids, Bards, or the Ritual Caster feat). Leave off for Sorcerers and other non-ritual casters.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={config.canRitualCast}
+              aria-label="Enable ritual casting"
+              onClick={() =>
+                onUpdateConfig({
+                  ...config,
+                  canRitualCast: !config.canRitualCast,
+                })
+              }
+              className={`relative shrink-0 w-12 h-7 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lapis dark:focus-visible:ring-lapis-dark ${
+                config.canRitualCast
+                  ? "bg-lapis dark:bg-lapis-dark"
+                  : "bg-limestone dark:bg-charcoal-border"
+              }`}
             >
-              Highest Unlocked Spell Level (Override)
-            </label>
-            <select
-              id="max-spell-level-select"
-              value={config.maxSpellLevel}
-              onChange={(e) => handleMaxSpellLevelChange(Number(e.target.value))}
-              className="w-full h-11 px-3.5 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-sm font-mono tabular-nums text-ink dark:text-parchment focus:outline-none focus:ring-2 focus:ring-lapis dark:focus:ring-lapis-dark"
-            >
-              {SPELL_LEVELS.map((lvl) => (
-                <option key={lvl.key} value={lvl.index}>
-                  {lvl.index === 0
-                    ? "Cantrips Only"
-                    : `Up to ${lvl.shortLabel} Level`}
-                </option>
-              ))}
-            </select>
+              <span
+                className={`block w-5 h-5 rounded-full bg-paper dark:bg-obsidian transition-transform ${
+                  config.canRitualCast ? "translate-x-6" : "translate-x-1"
+                }`}
+              />
+            </button>
           </div>
         </div>
 

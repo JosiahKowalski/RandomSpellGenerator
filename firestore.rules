@@ -47,11 +47,40 @@ service cloud.firestore {
         && (list.size() == 0 || isValidRingSpellEntry(list[0]));
     }
 
+    function isValidSpellSlots(slots) {
+      return slots is map
+        && slots.keys().hasAll(['useCustomMax', 'max', 'used'])
+        && slots.keys().hasOnly(['useCustomMax', 'max', 'used'])
+        && slots.useCustomMax is bool
+        && slots.max is map && slots.max.size() <= 9
+        && slots.used is map && slots.used.size() <= 9;
+    }
+
+    function isValidConcentrationSpell(val) {
+      return val == null || (val is string && val.size() <= 120);
+    }
+
+    function isValidRollHistoryEntry(entry) {
+      return entry is map
+        && entry.keys().hasAll(['id', 'rolledSpellNames', 'rolledAt'])
+        && entry.keys().hasOnly(['id', 'rolledSpellNames', 'rolledAt'])
+        && entry.id is string && entry.id.size() > 0 && entry.id.size() <= 80
+        && isValidStringList(entry.rolledSpellNames, 100)
+        && entry.rolledAt is string && entry.rolledAt.size() > 0 && entry.rolledAt.size() <= 40;
+    }
+
+    function isValidRollHistory(list) {
+      return list is list
+        && list.size() <= 8
+        && (list.size() == 0 || isValidRollHistoryEntry(list[0]));
+    }
+
     function isValidConfig(cfg) {
       return cfg is map
         && cfg.keys().hasAll([
           'casterLevel',
           'maxSpellLevel',
+          'canRitualCast',
           'levelCounts',
           'classWeights',
           'multiClassRule',
@@ -67,6 +96,7 @@ service cloud.firestore {
         && cfg.keys().hasOnly([
           'casterLevel',
           'maxSpellLevel',
+          'canRitualCast',
           'levelCounts',
           'classWeights',
           'multiClassRule',
@@ -81,6 +111,7 @@ service cloud.firestore {
         ])
         && cfg.casterLevel is int && cfg.casterLevel >= 1 && cfg.casterLevel <= 20
         && cfg.maxSpellLevel is int && cfg.maxSpellLevel >= 0 && cfg.maxSpellLevel <= 9
+        && cfg.canRitualCast is bool
         && cfg.levelCounts is map && cfg.levelCounts.size() <= 10
         && cfg.classWeights is map && cfg.classWeights.size() <= 20
         && cfg.multiClassRule is string && cfg.multiClassRule in ['lowest', 'average', 'highest']
@@ -100,6 +131,9 @@ service cloud.firestore {
           'knownSpellNames',
           'rolledSpellNames',
           'ringSpells',
+          'spellSlots',
+          'concentrationSpell',
+          'rollHistory',
           'config',
           'createdAt',
           'updatedAt'
@@ -109,6 +143,9 @@ service cloud.firestore {
           'knownSpellNames',
           'rolledSpellNames',
           'ringSpells',
+          'spellSlots',
+          'concentrationSpell',
+          'rollHistory',
           'config',
           'createdAt',
           'updatedAt'
@@ -120,6 +157,9 @@ service cloud.firestore {
         && isValidStringList(data.knownSpellNames, 400)
         && isValidStringList(data.rolledSpellNames, 100)
         && isValidRingSpells(data.ringSpells)
+        && isValidSpellSlots(data.spellSlots)
+        && isValidConcentrationSpell(data.concentrationSpell)
+        && isValidRollHistory(data.rollHistory)
         && isValidConfig(data.config)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -163,6 +203,9 @@ service cloud.firestore {
           'knownSpellNames',
           'rolledSpellNames',
           'ringSpells',
+          'spellSlots',
+          'concentrationSpell',
+          'rollHistory',
           'config',
           'updatedAt'
         ]);

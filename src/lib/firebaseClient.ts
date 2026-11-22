@@ -13,8 +13,11 @@ import {
 } from "firebase/firestore";
 import { GrimoireSnapshot } from "../types/spell";
 import {
+  sanitizeConcentrationSpell,
   sanitizeConfig,
   sanitizeRingSpells,
+  sanitizeRollHistory,
+  sanitizeSpellSlots,
   sanitizeStringList,
 } from "./spellEngine";
 
@@ -155,11 +158,15 @@ export async function loadCloudGrimoire(
     if (!snap.exists()) return null;
     const data = snap.data();
     const updatedTs = data.updatedAt as Timestamp | undefined;
+    const cleanConfig = sanitizeConfig(data.config);
     return {
       knownSpellNames: sanitizeStringList(data.knownSpellNames, 400),
       rolledSpellNames: sanitizeStringList(data.rolledSpellNames, 100),
       ringSpells: sanitizeRingSpells(data.ringSpells),
-      config: sanitizeConfig(data.config),
+      spellSlots: sanitizeSpellSlots(data.spellSlots, cleanConfig.casterLevel),
+      concentrationSpell: sanitizeConcentrationSpell(data.concentrationSpell),
+      rollHistory: sanitizeRollHistory(data.rollHistory),
+      config: cleanConfig,
       updatedAt: updatedTs?.toDate
         ? updatedTs.toDate().toISOString()
         : new Date().toISOString(),
@@ -180,6 +187,14 @@ export async function saveCloudGrimoire(
   const sanitizedRolled = sanitizeStringList(snapshot.rolledSpellNames, 100);
   const sanitizedRing = sanitizeRingSpells(snapshot.ringSpells);
   const sanitizedConfig = sanitizeConfig(snapshot.config);
+  const sanitizedSlots = sanitizeSpellSlots(
+    snapshot.spellSlots,
+    sanitizedConfig.casterLevel
+  );
+  const sanitizedConcentration = sanitizeConcentrationSpell(
+    snapshot.concentrationSpell
+  );
+  const sanitizedHistory = sanitizeRollHistory(snapshot.rollHistory);
 
   try {
     const existingSnap = await getDoc(docRef);
@@ -188,6 +203,9 @@ export async function saveCloudGrimoire(
         knownSpellNames: sanitizedKnown,
         rolledSpellNames: sanitizedRolled,
         ringSpells: sanitizedRing,
+        spellSlots: sanitizedSlots,
+        concentrationSpell: sanitizedConcentration,
+        rollHistory: sanitizedHistory,
         config: sanitizedConfig,
         updatedAt: serverTimestamp(),
       });
@@ -197,6 +215,9 @@ export async function saveCloudGrimoire(
         knownSpellNames: sanitizedKnown,
         rolledSpellNames: sanitizedRolled,
         ringSpells: sanitizedRing,
+        spellSlots: sanitizedSlots,
+        concentrationSpell: sanitizedConcentration,
+        rollHistory: sanitizedHistory,
         config: sanitizedConfig,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
