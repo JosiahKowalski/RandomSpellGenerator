@@ -16,6 +16,134 @@ interface SpellReaderModalProps {
   onQuickStoreInRing?: (spell: Spell) => void;
 }
 
+const NUMERIC_COLUMN_HEADER =
+  /^(d\d+|stage|hp|ac|str|dex|save modifier|mishap|similar area|off target|on target)$/i;
+const TABLE_SEPARATOR_LINE = /^\|?(\s*:?-{3,}:?\s*\|)+\s*$/;
+
+function parseTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed.split("|").map((cell) => cell.trim());
+}
+
+const SpellDescription: React.FC<{ text: string }> = ({ text }) => {
+  const blocks = text
+    .split(/\n{2,}/)
+    .map((b) => b.trim())
+    .filter(Boolean);
+
+  return (
+    <div className="space-y-3.5">
+      {blocks.map((block, blockIdx) => {
+        const lines = block
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean);
+
+        // Pipe table (with or without a preceding title line)
+        const hasDirectTable =
+          lines.length >= 2 &&
+          lines[0].includes("|") &&
+          TABLE_SEPARATOR_LINE.test(lines[1]);
+        const hasCaptionedTable =
+          lines.length >= 3 &&
+          !lines[0].includes("|") &&
+          lines[1].includes("|") &&
+          TABLE_SEPARATOR_LINE.test(lines[2]);
+
+        if (hasDirectTable || hasCaptionedTable) {
+          const caption = hasCaptionedTable ? lines[0] : null;
+          const headerIdx = hasCaptionedTable ? 1 : 0;
+          const headers = parseTableRow(lines[headerIdx]);
+          const rows = lines
+            .slice(headerIdx + 2)
+            .filter((line) => line.includes("|"))
+            .map(parseTableRow);
+
+          return (
+            <div key={blockIdx} className="my-1">
+              {caption && (
+                <div className="text-xs font-semibold text-ink-muted dark:text-ash mb-1.5">
+                  {caption}
+                </div>
+              )}
+              <div className="overflow-x-auto rounded-md border border-limestone dark:border-charcoal-border">
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-linen/80 dark:bg-obsidian/80 border-b border-limestone dark:border-charcoal-border">
+                      {headers.map((header, colIdx) => (
+                        <th
+                          key={colIdx}
+                          className={`px-3 py-2 text-left text-xs font-semibold text-ink dark:text-parchment ${
+                            NUMERIC_COLUMN_HEADER.test(header)
+                              ? "whitespace-nowrap"
+                              : ""
+                          }`}
+                        >
+                          {header}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-limestone/70 dark:divide-charcoal-border/70">
+                    {rows.map((row, rowIdx) => (
+                      <tr
+                        key={rowIdx}
+                        className="bg-paper dark:bg-soot even:bg-linen/30 dark:even:bg-obsidian/30"
+                      >
+                        {headers.map((header, colIdx) => {
+                          const cell = row[colIdx] ?? "";
+                          const isNumericCol =
+                            NUMERIC_COLUMN_HEADER.test(header);
+                          return (
+                            <td
+                              key={colIdx}
+                              className={`px-3 py-2 align-top text-ink dark:text-parchment leading-relaxed ${
+                                isNumericCol
+                                  ? "font-mono text-xs tabular-nums whitespace-nowrap"
+                                  : ""
+                              }`}
+                            >
+                              {cell}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        }
+
+        // Bullet list block
+        if (lines.length > 0 && lines.every((line) => line.startsWith("- "))) {
+          return (
+            <ul
+              key={blockIdx}
+              className="list-disc pl-5 space-y-1.5 text-[15px] leading-[1.7] text-ink dark:text-parchment marker:text-ink-muted dark:marker:text-ash"
+            >
+              {lines.map((line, itemIdx) => (
+                <li key={itemIdx}>{line.slice(2)}</li>
+              ))}
+            </ul>
+          );
+        }
+
+        // Regular paragraph
+        return (
+          <p
+            key={blockIdx}
+            className="text-[15px] leading-[1.7] text-ink dark:text-parchment whitespace-pre-wrap"
+          >
+            {block}
+          </p>
+        );
+      })}
+    </div>
+  );
+};
+
 export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
   spell,
   isKnown,
@@ -141,9 +269,13 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
 
           {/* Main Spell Text */}
           <div className="max-w-prose space-y-4">
-            <div className="text-[15px] leading-[1.7] text-ink dark:text-parchment whitespace-pre-wrap">
-              {spell.text || "No description provided in the loaded CSV."}
-            </div>
+            {spell.text ? (
+              <SpellDescription text={spell.text} />
+            ) : (
+              <p className="text-[15px] leading-[1.7] text-ink-muted dark:text-ash">
+                No description provided in the loaded CSV.
+              </p>
+            )}
 
             {spell.atHigherLevels && (
               <div className="pt-4 border-t border-limestone dark:border-charcoal-border">
