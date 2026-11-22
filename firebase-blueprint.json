@@ -37,7 +37,11 @@
         },
         "spellSlots": {
           "type": "object",
-          "description": "Spell slot tracking state (useCustomMax flag, max slots per level 1-9, and expended slots per level 1-9)"
+          "description": "Spell slot tracking state (useCustomMax flag, max slots, expended slots, and temporary Flexible Casting bonus slots per level 1-9)"
+        },
+        "sorcery": {
+          "type": "object",
+          "description": "Sorcery points and pinned Metamagic options (useCustomMax, maxPoints 0-30, usedPoints 0-30, knownMetamagics up to 15)"
         },
         "concentrationSpell": {
           "type": "string",
@@ -69,6 +73,7 @@
         "rolledSpellNames",
         "ringSpells",
         "spellSlots",
+        "sorcery",
         "concentrationSpell",
         "rollHistory",
         "config",

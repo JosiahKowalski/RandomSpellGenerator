@@ -17,6 +17,7 @@ import {
   sanitizeConfig,
   sanitizeRingSpells,
   sanitizeRollHistory,
+  sanitizeSorcery,
   sanitizeSpellSlots,
   sanitizeStringList,
 } from "./spellEngine";
@@ -164,6 +165,7 @@ export async function loadCloudGrimoire(
       rolledSpellNames: sanitizeStringList(data.rolledSpellNames, 100),
       ringSpells: sanitizeRingSpells(data.ringSpells),
       spellSlots: sanitizeSpellSlots(data.spellSlots, cleanConfig.casterLevel),
+      sorcery: sanitizeSorcery(data.sorcery, cleanConfig.casterLevel),
       concentrationSpell: sanitizeConcentrationSpell(data.concentrationSpell),
       rollHistory: sanitizeRollHistory(data.rollHistory),
       config: cleanConfig,
@@ -191,6 +193,10 @@ export async function saveCloudGrimoire(
     snapshot.spellSlots,
     sanitizedConfig.casterLevel
   );
+  const sanitizedSorcery = sanitizeSorcery(
+    snapshot.sorcery,
+    sanitizedConfig.casterLevel
+  );
   const sanitizedConcentration = sanitizeConcentrationSpell(
     snapshot.concentrationSpell
   );
@@ -204,6 +210,7 @@ export async function saveCloudGrimoire(
         rolledSpellNames: sanitizedRolled,
         ringSpells: sanitizedRing,
         spellSlots: sanitizedSlots,
+        sorcery: sanitizedSorcery,
         concentrationSpell: sanitizedConcentration,
         rollHistory: sanitizedHistory,
         config: sanitizedConfig,
@@ -216,6 +223,7 @@ export async function saveCloudGrimoire(
         rolledSpellNames: sanitizedRolled,
         ringSpells: sanitizedRing,
         spellSlots: sanitizedSlots,
+        sorcery: sanitizedSorcery,
         concentrationSpell: sanitizedConcentration,
         rollHistory: sanitizedHistory,
         config: sanitizedConfig,

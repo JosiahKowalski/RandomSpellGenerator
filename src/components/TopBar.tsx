@@ -75,9 +75,11 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   const navItems: Array<{ id: AppView; label: string }> = [
     { id: "spellbook", label: "Spellbook" },
+    { id: "metamagic", label: "Metamagic" },
+    { id: "dice", label: "Dice" },
     { id: "ring", label: `Ring (${ringUsedLevels}/5)` },
     { id: "rules", label: "Rules" },
-    { id: "pool", label: `Spell Pool (${poolCount})` },
+    { id: "pool", label: `Pool (${poolCount})` },
   ];
 
   return (
@@ -95,7 +97,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         {/* Zone 2: Concise single-line navigation links */}
         <nav
           aria-label="Primary navigation"
-          className="hidden md:flex items-center gap-7"
+          className="hidden md:flex items-center gap-5 lg:gap-6"
         >
           {navItems.map((item) => {
             const isActive = activeView === item.id;
@@ -309,7 +311,7 @@ export const TopBar: React.FC<TopBarProps> = ({
       {/* Compact Mobile Navigation Row */}
       <nav
         aria-label="Mobile navigation"
-        className="md:hidden border-t border-limestone dark:border-charcoal-border px-4 flex items-center justify-around"
+        className="md:hidden border-t border-limestone dark:border-charcoal-border px-3 flex items-center justify-start sm:justify-around gap-1 overflow-x-auto"
       >
         {navItems.map((item) => {
           const isActive = activeView === item.id;

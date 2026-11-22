@@ -49,11 +49,22 @@ service cloud.firestore {
 
     function isValidSpellSlots(slots) {
       return slots is map
-        && slots.keys().hasAll(['useCustomMax', 'max', 'used'])
-        && slots.keys().hasOnly(['useCustomMax', 'max', 'used'])
+        && slots.keys().hasAll(['useCustomMax', 'max', 'used', 'bonus'])
+        && slots.keys().hasOnly(['useCustomMax', 'max', 'used', 'bonus'])
         && slots.useCustomMax is bool
         && slots.max is map && slots.max.size() <= 9
-        && slots.used is map && slots.used.size() <= 9;
+        && slots.used is map && slots.used.size() <= 9
+        && slots.bonus is map && slots.bonus.size() <= 9;
+    }
+
+    function isValidSorcery(sorc) {
+      return sorc is map
+        && sorc.keys().hasAll(['useCustomMax', 'maxPoints', 'usedPoints', 'knownMetamagics'])
+        && sorc.keys().hasOnly(['useCustomMax', 'maxPoints', 'usedPoints', 'knownMetamagics'])
+        && sorc.useCustomMax is bool
+        && sorc.maxPoints is int && sorc.maxPoints >= 0 && sorc.maxPoints <= 30
+        && sorc.usedPoints is int && sorc.usedPoints >= 0 && sorc.usedPoints <= 30
+        && isValidStringList(sorc.knownMetamagics, 15);
     }
 
     function isValidConcentrationSpell(val) {
@@ -132,6 +143,7 @@ service cloud.firestore {
           'rolledSpellNames',
           'ringSpells',
           'spellSlots',
+          'sorcery',
           'concentrationSpell',
           'rollHistory',
           'config',
@@ -144,6 +156,7 @@ service cloud.firestore {
           'rolledSpellNames',
           'ringSpells',
           'spellSlots',
+          'sorcery',
           'concentrationSpell',
           'rollHistory',
           'config',
@@ -158,6 +171,7 @@ service cloud.firestore {
         && isValidStringList(data.rolledSpellNames, 100)
         && isValidRingSpells(data.ringSpells)
         && isValidSpellSlots(data.spellSlots)
+        && isValidSorcery(data.sorcery)
         && isValidConcentrationSpell(data.concentrationSpell)
         && isValidRollHistory(data.rollHistory)
         && isValidConfig(data.config)
@@ -204,6 +218,7 @@ service cloud.firestore {
           'rolledSpellNames',
           'ringSpells',
           'spellSlots',
+          'sorcery',
           'concentrationSpell',
           'rollHistory',
           'config',

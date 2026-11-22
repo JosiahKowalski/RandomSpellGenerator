@@ -13,6 +13,7 @@ import {
   LevelShortfall,
   RandomizerConfig,
   RollHistoryEntry,
+  SorceryState,
   Spell,
   SpellSlotState,
   StoredRingSpell,
@@ -22,7 +23,9 @@ import {
   createZeroSlotMap,
   CUSTOM_CATALOG_KEY,
   DEFAULT_CONFIG,
+  DEFAULT_SORCERY,
   DEFAULT_SPELL_SLOTS,
+  getDefaultSorceryPoints,
   getDefaultSpellSlots,
   LOCAL_STORAGE_KEY,
   SPELL_LEVELS,
@@ -30,6 +33,7 @@ import {
 } from "./lib/constants";
 import {
   filterSpellPool,
+  getBaseMaxSlots,
   getEffectiveMaxSlots,
   getRingUsedLevels,
   MAX_ROLL_HISTORY,
@@ -41,6 +45,7 @@ import {
   sanitizeConfig,
   sanitizeRingSpells,
   sanitizeRollHistory,
+  sanitizeSorcery,
   sanitizeSpellSlots,
   sanitizeStringList,
   validateImportPayload,
@@ -56,6 +61,8 @@ import {
 } from "./lib/firebaseClient";
 import { TopBar } from "./components/TopBar";
 import { SpellbookView } from "./components/SpellbookView";
+import { MetamagicView } from "./components/MetamagicView";
+import { DiceRollerView } from "./components/DiceRollerView";
 import { RingOfSpellStoringView } from "./components/RingOfSpellStoringView";
 import { RulesView } from "./components/RulesView";
 import { SpellPoolView } from "./components/SpellPoolView";
@@ -100,6 +107,16 @@ function cloneSlotState(slots: SpellSlotState): SpellSlotState {
     useCustomMax: slots.useCustomMax,
     max: { ...slots.max },
     used: { ...slots.used },
+    bonus: { ...slots.bonus },
+  };
+}
+
+function cloneSorceryState(sorcery: SorceryState): SorceryState {
+  return {
+    useCustomMax: sorcery.useCustomMax,
+    maxPoints: sorcery.maxPoints,
+    usedPoints: sorcery.usedPoints,
+    knownMetamagics: [...sorcery.knownMetamagics],
   };
 }
 
@@ -118,6 +135,7 @@ function createEmptyLocalSnapshot(): GrimoireSnapshot {
     rolledSpellNames: [],
     ringSpells: [],
     spellSlots: cloneSlotState(DEFAULT_SPELL_SLOTS),
+    sorcery: cloneSorceryState(DEFAULT_SORCERY),
     concentrationSpell: null,
     rollHistory: [],
     config: { ...DEFAULT_CONFIG },
@@ -141,6 +159,7 @@ function loadLocalSnapshot(): GrimoireSnapshot {
         parsed.spellSlots,
         cleanConfig.casterLevel
       ),
+      sorcery: sanitizeSorcery(parsed.sorcery, cleanConfig.casterLevel),
       concentrationSpell: sanitizeConcentrationSpell(parsed.concentrationSpell),
       rollHistory: sanitizeRollHistory(parsed.rollHistory),
       config: cleanConfig,
@@ -179,6 +198,7 @@ export default function App() {
   const [spellSlots, setSpellSlots] = useState<SpellSlotState>(
     initialLocal.spellSlots
   );
+  const [sorcery, setSorcery] = useState<SorceryState>(initialLocal.sorcery);
   const [concentrationSpell, setConcentrationSpell] = useState<string | null>(
     initialLocal.concentrationSpell
   );
@@ -188,6 +208,7 @@ export default function App() {
   const [config, setConfig] = useState<RandomizerConfig>(initialLocal.config);
   const [shortfalls, setShortfalls] = useState<LevelShortfall[]>([]);
   const [selectedSpell, setSelectedSpell] = useState<Spell | null>(null);
+  const [pendingDiceSpell, setPendingDiceSpell] = useState<Spell | null>(null);
   const [lastSlotFlash, setLastSlotFlash] = useState<{
     level: number;
     seq: number;
@@ -281,10 +302,8 @@ export default function App() {
       for (let lvl = 1; lvl <= 9; lvl++) {
         const key = String(lvl);
         if (prev.max[key] !== nextMax[key]) changed = true;
-        const clampedUsed = Math.min(
-          nextMax[key] ?? 0,
-          Math.max(0, prev.used[key] ?? 0)
-        );
+        const totalCap = (nextMax[key] ?? 0) + Math.max(0, prev.bonus?.[key] ?? 0);
+        const clampedUsed = Math.min(totalCap, Math.max(0, prev.used[key] ?? 0));
         if (clampedUsed !== (prev.used[key] ?? 0)) {
           nextUsed[key] = clampedUsed;
           changed = true;
@@ -295,6 +314,21 @@ export default function App() {
         useCustomMax: false,
         max: nextMax,
         used: nextUsed,
+        bonus: { ...prev.bonus },
+      };
+    });
+
+    setSorcery((prev) => {
+      if (prev.useCustomMax) return prev;
+      const nextMax = getDefaultSorceryPoints(config.casterLevel);
+      const nextUsed = Math.min(nextMax, Math.max(0, prev.usedPoints));
+      if (prev.maxPoints === nextMax && prev.usedPoints === nextUsed) {
+        return prev;
+      }
+      return {
+        ...prev,
+        maxPoints: nextMax,
+        usedPoints: nextUsed,
       };
     });
   }, [config.casterLevel]);
@@ -306,6 +340,7 @@ export default function App() {
       rolledSpellNames,
       ringSpells,
       spellSlots,
+      sorcery,
       concentrationSpell,
       rollHistory,
       config,
@@ -321,6 +356,7 @@ export default function App() {
     rolledSpellNames,
     ringSpells,
     spellSlots,
+    sorcery,
     concentrationSpell,
     rollHistory,
     config,
@@ -372,6 +408,7 @@ export default function App() {
             setRolledSpellNames(cloudSave.rolledSpellNames);
             setRingSpells(cloudSave.ringSpells);
             setSpellSlots(cloudSave.spellSlots);
+            setSorcery(cloudSave.sorcery);
             setConcentrationSpell(cloudSave.concentrationSpell);
             setRollHistory(cloudSave.rollHistory);
             setConfig(cloudSave.config);
@@ -633,19 +670,21 @@ export default function App() {
     const key = String(level);
     const clamped = Math.max(0, Math.min(9, Math.round(nextMax)));
     setSpellSlots((prev) => {
-      const baseMax = getEffectiveMaxSlots(prev, config.casterLevel);
+      const baseMax = getBaseMaxSlots(prev, config.casterLevel);
       const updatedMax = {
         ...baseMax,
         [key]: clamped,
       };
+      const bonusCount = Math.max(0, prev.bonus?.[key] ?? 0);
       const updatedUsed = {
         ...prev.used,
-        [key]: Math.min(clamped, Math.max(0, prev.used[key] ?? 0)),
+        [key]: Math.min(clamped + bonusCount, Math.max(0, prev.used[key] ?? 0)),
       };
       return {
         useCustomMax: true,
         max: updatedMax,
         used: updatedUsed,
+        bonus: { ...prev.bonus },
       };
     });
   };
@@ -656,8 +695,9 @@ export default function App() {
       const nextUsed: Record<string, number> = {};
       for (let lvl = 1; lvl <= 9; lvl++) {
         const key = String(lvl);
+        const bonusCount = Math.max(0, prev.bonus?.[key] ?? 0);
         nextUsed[key] = Math.min(
-          nextMax[key] ?? 0,
+          (nextMax[key] ?? 0) + bonusCount,
           Math.max(0, prev.used[key] ?? 0)
         );
       }
@@ -665,6 +705,7 @@ export default function App() {
         useCustomMax: false,
         max: nextMax,
         used: nextUsed,
+        bonus: { ...prev.bonus },
       };
     });
     showToast(`Reset max slots to Level ${config.casterLevel} defaults.`);
@@ -672,21 +713,208 @@ export default function App() {
 
   const handleLongRest = () => {
     const previousSlots = cloneSlotState(spellSlots);
+    const previousSorcery = cloneSorceryState(sorcery);
     const previousConc = concentrationSpell;
 
     setSpellSlots((prev) => ({
       ...prev,
       used: createZeroSlotMap(),
+      bonus: createZeroSlotMap(),
+    }));
+    setSorcery((prev) => ({
+      ...prev,
+      usedPoints: 0,
     }));
     setConcentrationSpell(null);
 
     const msg = previousConc
-      ? `Long rest complete — slots restored and dropped ${previousConc}.`
-      : "Long rest complete — all spell slots restored.";
+      ? `Long rest complete — slots & sorcery points restored, dropped ${previousConc}.`
+      : "Long rest complete — spell slots & sorcery points restored.";
     showToast(msg, "Undo", () => {
       setSpellSlots(previousSlots);
+      setSorcery(previousSorcery);
       setConcentrationSpell(previousConc);
     });
+  };
+
+  // Sorcery Points, Metamagic & Flexible Casting Handlers
+  const getCurrentMaxSorcery = () =>
+    sorcery.useCustomMax
+      ? sorcery.maxPoints
+      : getDefaultSorceryPoints(config.casterLevel);
+
+  const handleSpendSorceryPoints = (amount: number, label?: string) => {
+    const maxPts = getCurrentMaxSorcery();
+    const currentUsed = Math.min(maxPts, Math.max(0, sorcery.usedPoints));
+    const remaining = Math.max(0, maxPts - currentUsed);
+    if (amount <= 0 || remaining < amount) {
+      showToast("Not enough sorcery points remaining.");
+      return;
+    }
+    const previousSorcery = cloneSorceryState(sorcery);
+    setSorcery((prev) => ({
+      ...prev,
+      maxPoints: maxPts,
+      usedPoints: currentUsed + amount,
+    }));
+    if (label) {
+      showToast(`Used ${label} (−${amount} SP).`, "Undo", () => {
+        setSorcery(previousSorcery);
+      });
+    }
+  };
+
+  const handleRegainSorceryPoints = (amount: number) => {
+    const maxPts = getCurrentMaxSorcery();
+    const currentUsed = Math.min(maxPts, Math.max(0, sorcery.usedPoints));
+    if (amount <= 0 || currentUsed <= 0) return;
+    setSorcery((prev) => ({
+      ...prev,
+      maxPoints: maxPts,
+      usedPoints: Math.max(0, currentUsed - amount),
+    }));
+  };
+
+  const handleSetCustomMaxSorcery = (nextMax: number) => {
+    const clamped = Math.max(0, Math.min(30, Math.round(nextMax)));
+    setSorcery((prev) => ({
+      ...prev,
+      useCustomMax: true,
+      maxPoints: clamped,
+      usedPoints: Math.min(clamped, Math.max(0, prev.usedPoints)),
+    }));
+  };
+
+  const handleResetSorceryDefaults = () => {
+    const defaultMax = getDefaultSorceryPoints(config.casterLevel);
+    setSorcery((prev) => ({
+      ...prev,
+      useCustomMax: false,
+      maxPoints: defaultMax,
+      usedPoints: Math.min(defaultMax, Math.max(0, prev.usedPoints)),
+    }));
+    showToast(`Reset sorcery points max to Lv. ${config.casterLevel} default (${defaultMax}).`);
+  };
+
+  const handleRestoreSorcery = () => {
+    const previousSorcery = cloneSorceryState(sorcery);
+    setSorcery((prev) => ({
+      ...prev,
+      usedPoints: 0,
+    }));
+    showToast("Refilled all sorcery points.", "Undo", () => {
+      setSorcery(previousSorcery);
+    });
+  };
+
+  const handleToggleKnownMetamagic = (id: string) => {
+    setSorcery((prev) => {
+      const exists = prev.knownMetamagics.includes(id);
+      return {
+        ...prev,
+        knownMetamagics: exists
+          ? prev.knownMetamagics.filter((item) => item !== id)
+          : [...prev.knownMetamagics, id],
+      };
+    });
+  };
+
+  const handleConvertSlotToSorcery = (level: number) => {
+    const key = String(level);
+    const effectiveMax = getEffectiveMaxSlots(spellSlots, config.casterLevel);
+    const maxSlot = effectiveMax[key] ?? 0;
+    const currentUsed = Math.min(maxSlot, Math.max(0, spellSlots.used[key] ?? 0));
+    if (currentUsed >= maxSlot) {
+      showToast(`No ${SPELL_LEVELS[level]?.shortLabel}-level slots left to convert.`);
+      return;
+    }
+
+    const maxPts = getCurrentMaxSorcery();
+    const currentUsedSp = Math.min(maxPts, Math.max(0, sorcery.usedPoints));
+    if (currentUsedSp <= 0) {
+      showToast("Sorcery points are already at maximum.");
+      return;
+    }
+
+    const previousSlots = cloneSlotState(spellSlots);
+    const previousSorcery = cloneSorceryState(sorcery);
+    const gained = Math.min(level, currentUsedSp);
+
+    setSpellSlots((prev) => ({
+      ...prev,
+      used: {
+        ...prev.used,
+        [key]: currentUsed + 1,
+      },
+    }));
+    setSorcery((prev) => ({
+      ...prev,
+      maxPoints: maxPts,
+      usedPoints: Math.max(0, currentUsedSp - level),
+    }));
+    triggerSlotFlash(level);
+
+    showToast(
+      `Converted ${SPELL_LEVELS[level]?.shortLabel}-level slot into +${gained} SP.`,
+      "Undo",
+      () => {
+        setSpellSlots(previousSlots);
+        setSorcery(previousSorcery);
+      }
+    );
+  };
+
+  const handleCreateSlotFromSorcery = (level: number, cost: number) => {
+    const key = String(level);
+    const maxPts = getCurrentMaxSorcery();
+    const currentUsedSp = Math.min(maxPts, Math.max(0, sorcery.usedPoints));
+    const remainingSp = Math.max(0, maxPts - currentUsedSp);
+
+    if (remainingSp < cost) {
+      showToast(`Need ${cost} sorcery points to create a ${SPELL_LEVELS[level]?.shortLabel}-level slot.`);
+      return;
+    }
+
+    const previousSlots = cloneSlotState(spellSlots);
+    const previousSorcery = cloneSorceryState(sorcery);
+    const currentUsedSlot = Math.max(0, spellSlots.used[key] ?? 0);
+    const restoredUsed = currentUsedSlot > 0;
+
+    setSorcery((prev) => ({
+      ...prev,
+      maxPoints: maxPts,
+      usedPoints: currentUsedSp + cost,
+    }));
+
+    if (restoredUsed) {
+      setSpellSlots((prev) => ({
+        ...prev,
+        used: {
+          ...prev.used,
+          [key]: Math.max(0, (prev.used[key] ?? 0) - 1),
+        },
+      }));
+    } else {
+      setSpellSlots((prev) => ({
+        ...prev,
+        bonus: {
+          ...prev.bonus,
+          [key]: Math.min(9, (prev.bonus?.[key] ?? 0) + 1),
+        },
+      }));
+    }
+    triggerSlotFlash(level);
+
+    showToast(
+      restoredUsed
+        ? `Spent ${cost} SP to restore a ${SPELL_LEVELS[level]?.shortLabel}-level slot.`
+        : `Spent ${cost} SP to create a temporary ${SPELL_LEVELS[level]?.shortLabel}-level slot.`,
+      "Undo",
+      () => {
+        setSpellSlots(previousSlots);
+        setSorcery(previousSorcery);
+      }
+    );
   };
 
   const handleSetConcentration = (spellName: string | null) => {
@@ -898,6 +1126,7 @@ export default function App() {
         rolledSpellNames,
         ringSpells,
         spellSlots,
+        sorcery,
         concentrationSpell,
         rollHistory,
         config,
@@ -930,6 +1159,7 @@ export default function App() {
       setRolledSpellNames(cloudSave.rolledSpellNames);
       setRingSpells(cloudSave.ringSpells);
       setSpellSlots(cloudSave.spellSlots);
+      setSorcery(cloudSave.sorcery);
       setConcentrationSpell(cloudSave.concentrationSpell);
       setRollHistory(cloudSave.rollHistory);
       setConfig(cloudSave.config);
@@ -974,6 +1204,7 @@ export default function App() {
       rolledSpellNames,
       ringSpells,
       spellSlots,
+      sorcery,
       concentrationSpell,
       rollHistory,
       config,
@@ -1005,6 +1236,7 @@ export default function App() {
       setRolledSpellNames(validated.rolledSpellNames);
       setRingSpells(validated.ringSpells);
       setSpellSlots(validated.spellSlots);
+      setSorcery(validated.sorcery);
       setConcentrationSpell(validated.concentrationSpell);
       setRollHistory(validated.rollHistory);
       setConfig(validated.config);
@@ -1103,6 +1335,7 @@ export default function App() {
                 config={config}
                 shortfalls={shortfalls}
                 slotState={spellSlots}
+                sorcery={sorcery}
                 concentrationSpell={concentrationSpell}
                 rollHistory={rollHistory}
                 lastSlotFlash={lastSlotFlash}
@@ -1112,17 +1345,50 @@ export default function App() {
                 onToggleKnown={handleToggleKnown}
                 onAddKnownSpell={handleAddKnownSpell}
                 onOpenSpell={setSelectedSpell}
-                onUpdateConfig={setConfig}
                 onOpenRules={() => setActiveView("rules")}
+                onOpenMetamagic={() => setActiveView("metamagic")}
                 onCastSpell={handleCastSpell}
                 onExpendSlot={handleExpendSlot}
                 onRecoverSlot={handleRecoverSlot}
                 onSetCustomMaxSlot={handleSetCustomMaxSlot}
                 onResetSlotDefaults={handleResetSlotDefaults}
+                onSpendSorceryPoints={handleSpendSorceryPoints}
+                onRegainSorceryPoints={handleRegainSorceryPoints}
                 onLongRest={handleLongRest}
                 onDropConcentration={handleDropConcentration}
                 onRestoreRollHistory={handleRestoreRollHistory}
                 onClearRollHistory={handleClearRollHistory}
+              />
+            )}
+
+            {activeView === "metamagic" && (
+              <MetamagicView
+                casterLevel={config.casterLevel}
+                slotState={spellSlots}
+                sorcery={sorcery}
+                onSpendSorceryPoints={handleSpendSorceryPoints}
+                onRegainSorceryPoints={handleRegainSorceryPoints}
+                onSetCustomMaxSorcery={handleSetCustomMaxSorcery}
+                onResetSorceryDefaults={handleResetSorceryDefaults}
+                onRestoreSorcery={handleRestoreSorcery}
+                onLongRest={handleLongRest}
+                onToggleKnownMetamagic={handleToggleKnownMetamagic}
+                onConvertSlotToSorcery={handleConvertSlotToSorcery}
+                onCreateSlotFromSorcery={handleCreateSlotFromSorcery}
+              />
+            )}
+
+            {activeView === "dice" && (
+              <DiceRollerView
+                catalog={catalog}
+                knownSpells={knownSpells}
+                rolledSpells={rolledSpells}
+                casterLevel={config.casterLevel}
+                slotState={spellSlots}
+                initialSpell={pendingDiceSpell}
+                onClearInitialSpell={() => setPendingDiceSpell(null)}
+                onCastSpell={handleCastSpell}
+                onOpenSpell={setSelectedSpell}
               />
             )}
 
@@ -1190,6 +1456,11 @@ export default function App() {
         onQuickStoreInRing={handleQuickStoreInRing}
         onCastSpell={handleCastSpell}
         onSetConcentration={handleSetConcentration}
+        onRollSpellInTray={(spell) => {
+          setSelectedSpell(null);
+          setPendingDiceSpell(spell);
+          setActiveView("dice");
+        }}
       />
 
       {/* Non-intrusive Toast Notification */}

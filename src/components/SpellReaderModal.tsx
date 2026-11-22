@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { ExternalLink, Lock, Plus, RefreshCw, Unlock, X } from "lucide-react";
+import { Dices, ExternalLink, Lock, Plus, RefreshCw, Unlock, X } from "lucide-react";
 import { Spell, SpellSlotState } from "../types/spell";
 import { SPELL_LEVELS } from "../lib/constants";
 import { getEffectiveMaxSlots, getSpell5eToolsUrl } from "../lib/spellEngine";
+import { parseSpellRolls } from "../lib/spellRollParser";
 
 interface SpellReaderModalProps {
   spell: Spell | null;
@@ -20,6 +21,7 @@ interface SpellReaderModalProps {
   onQuickStoreInRing?: (spell: Spell) => void;
   onCastSpell?: (spell: Spell, slotLevel: number | null) => void;
   onSetConcentration?: (spellName: string | null) => void;
+  onRollSpellInTray?: (spell: Spell) => void;
 }
 
 const NUMERIC_COLUMN_HEADER =
@@ -165,6 +167,7 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
   onQuickStoreInRing,
   onCastSpell,
   onSetConcentration,
+  onRollSpellInTray,
 }) => {
   const effectiveMax = useMemo(
     () => getEffectiveMaxSlots(slotState, casterLevel),
@@ -204,6 +207,11 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [spell, onClose]);
+
+  const hasTrayRolls = useMemo(
+    () => (spell ? parseSpellRolls(spell).hasAnyRoll : false),
+    [spell]
+  );
 
   if (!spell || typeof document === "undefined") return null;
 
@@ -354,8 +362,9 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
         </div>
 
         {/* Tabletop Cast & Concentration Strip */}
-        {(onCastSpell || onSetConcentration) &&
-          (spell.levelIndex > 0 || spell.isConcentration) && (
+        {((onCastSpell || onSetConcentration) &&
+          (spell.levelIndex > 0 || spell.isConcentration) ||
+          (onRollSpellInTray && hasTrayRolls)) && (
             <div className="px-6 py-3 border-t border-limestone dark:border-charcoal-border bg-paper dark:bg-soot flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2">
                 {spell.levelIndex > 0 && onCastSpell && (
@@ -428,6 +437,17 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
                       : spell.levelIndex === 0
                       ? "Concentrate"
                       : "Set Concentration"}
+                  </button>
+                )}
+
+                {onRollSpellInTray && hasTrayRolls && (
+                  <button
+                    type="button"
+                    onClick={() => onRollSpellInTray(spell)}
+                    className="h-9 px-3 inline-flex items-center gap-1.5 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-xs font-medium text-ink dark:text-parchment hover:border-sienna dark:hover:border-brass hover:text-sienna dark:hover:text-brass transition-colors whitespace-nowrap"
+                  >
+                    <Dices className="w-3.5 h-3.5" />
+                    <span>Roll in Tray</span>
                   </button>
                 )}
               </div>

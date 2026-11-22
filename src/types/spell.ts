@@ -61,6 +61,25 @@ export interface SpellSlotState {
   useCustomMax: boolean;
   max: Record<string, number>; // "1".."9"
   used: Record<string, number>; // "1".."9"
+  bonus: Record<string, number>; // "1".."9" temporary slots from Flexible Casting
+}
+
+export interface SorceryState {
+  useCustomMax: boolean;
+  maxPoints: number; // 0..30
+  usedPoints: number; // 0..30
+  knownMetamagics: string[]; // IDs of pinned metamagic options
+}
+
+export interface MetamagicOption {
+  id: string;
+  name: string;
+  source: "PHB" | "TCE";
+  costLabel: string;
+  fixedCost: number | null; // null for variable cost (Twinned Spell)
+  combinable: boolean;
+  summary: string;
+  rules: string;
 }
 
 export interface RollHistoryEntry {
@@ -74,6 +93,7 @@ export interface GrimoireSnapshot {
   rolledSpellNames: string[];
   ringSpells: StoredRingSpell[];
   spellSlots: SpellSlotState;
+  sorcery: SorceryState;
   concentrationSpell: string | null;
   rollHistory: RollHistoryEntry[];
   config: RandomizerConfig;
@@ -91,6 +111,12 @@ export interface RollResult {
   shortfalls: LevelShortfall[];
 }
 
-export type AppView = "spellbook" | "ring" | "rules" | "pool";
+export type AppView =
+  | "spellbook"
+  | "metamagic"
+  | "dice"
+  | "ring"
+  | "rules"
+  | "pool";
 export type SpellFilterTab = "all" | "rolled" | "known";
 export type ThemeMode = "light" | "dark";

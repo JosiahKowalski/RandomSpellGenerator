@@ -7,6 +7,7 @@ import {
   RollHistoryEntry,
   RollResult,
   RulePresetId,
+  SorceryState,
   Spell,
   SpellSlotState,
   StoredRingSpell,
@@ -17,8 +18,10 @@ import {
   createZeroSlotMap,
   DEFAULT_CONFIG,
   DND_CLASSES,
+  getDefaultSorceryPoints,
   getDefaultSpellSlots,
   MAGIC_SCHOOLS,
+  METAMAGIC_OPTIONS,
   RULE_PRESETS,
   SPELL_LEVELS,
 } from "./constants";
@@ -569,7 +572,7 @@ export function sanitizeRingSpells(raw: unknown): StoredRingSpell[] {
 
 export const MAX_ROLL_HISTORY = 8;
 
-export function getEffectiveMaxSlots(
+export function getBaseMaxSlots(
   slotState: SpellSlotState,
   casterLevel: number
 ): Record<string, number> {
@@ -588,6 +591,24 @@ export function getEffectiveMaxSlots(
   return out;
 }
 
+export function getEffectiveMaxSlots(
+  slotState: SpellSlotState,
+  casterLevel: number
+): Record<string, number> {
+  const base = getBaseMaxSlots(slotState, casterLevel);
+  const out: Record<string, number> = {};
+  for (let lvl = 1; lvl <= 9; lvl++) {
+    const key = String(lvl);
+    const bonusRaw = slotState.bonus?.[key];
+    const bonus =
+      typeof bonusRaw === "number" && Number.isFinite(bonusRaw)
+        ? Math.max(0, Math.min(9, Math.round(bonusRaw)))
+        : 0;
+    out[key] = Math.min(18, (base[key] ?? 0) + bonus);
+  }
+  return out;
+}
+
 export function sanitizeSpellSlots(
   raw: unknown,
   casterLevel = DEFAULT_CONFIG.casterLevel
@@ -598,6 +619,7 @@ export function sanitizeSpellSlots(
       useCustomMax: false,
       max: defaultMax,
       used: createZeroSlotMap(),
+      bonus: createZeroSlotMap(),
     };
   }
   const obj = raw as Record<string, unknown>;
@@ -610,9 +632,14 @@ export function sanitizeSpellSlots(
     obj.used && typeof obj.used === "object"
       ? (obj.used as Record<string, unknown>)
       : {};
+  const rawBonus =
+    obj.bonus && typeof obj.bonus === "object"
+      ? (obj.bonus as Record<string, unknown>)
+      : {};
 
   const max: Record<string, number> = {};
   const used: Record<string, number> = {};
+  const bonus: Record<string, number> = {};
 
   for (let lvl = 1; lvl <= 9; lvl++) {
     const key = String(lvl);
@@ -623,15 +650,66 @@ export function sanitizeSpellSlots(
         : defaultMax[key];
     max[key] = cleanMax;
 
+    const bVal = rawBonus[key];
+    const cleanBonus =
+      typeof bVal === "number" && Number.isFinite(bVal)
+        ? Math.max(0, Math.min(9, Math.round(bVal)))
+        : 0;
+    bonus[key] = cleanBonus;
+
     const uVal = rawUsed[key];
     const cleanUsed =
       typeof uVal === "number" && Number.isFinite(uVal)
-        ? Math.max(0, Math.min(cleanMax, Math.round(uVal)))
+        ? Math.max(0, Math.min(cleanMax + cleanBonus, Math.round(uVal)))
         : 0;
     used[key] = cleanUsed;
   }
 
-  return { useCustomMax, max, used };
+  return { useCustomMax, max, used, bonus };
+}
+
+const VALID_METAMAGIC_IDS = new Set(METAMAGIC_OPTIONS.map((m) => m.id));
+
+export function sanitizeSorcery(
+  raw: unknown,
+  casterLevel = DEFAULT_CONFIG.casterLevel
+): SorceryState {
+  const defaultMax = getDefaultSorceryPoints(casterLevel);
+  if (!raw || typeof raw !== "object") {
+    return {
+      useCustomMax: false,
+      maxPoints: defaultMax,
+      usedPoints: 0,
+      knownMetamagics: [],
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+  const useCustomMax = Boolean(obj.useCustomMax);
+  const maxPoints =
+    useCustomMax &&
+    typeof obj.maxPoints === "number" &&
+    Number.isFinite(obj.maxPoints)
+      ? Math.max(0, Math.min(30, Math.round(obj.maxPoints)))
+      : defaultMax;
+  const usedPoints =
+    typeof obj.usedPoints === "number" && Number.isFinite(obj.usedPoints)
+      ? Math.max(0, Math.min(maxPoints, Math.round(obj.usedPoints)))
+      : 0;
+
+  const knownMetamagics: string[] = [];
+  if (Array.isArray(obj.knownMetamagics)) {
+    const seen = new Set<string>();
+    for (const item of obj.knownMetamagics) {
+      if (typeof item !== "string") continue;
+      const clean = item.trim().toLowerCase();
+      if (!VALID_METAMAGIC_IDS.has(clean) || seen.has(clean)) continue;
+      seen.add(clean);
+      knownMetamagics.push(clean);
+      if (knownMetamagics.length >= 15) break;
+    }
+  }
+
+  return { useCustomMax, maxPoints, usedPoints, knownMetamagics };
 }
 
 export function sanitizeConcentrationSpell(raw: unknown): string | null {
@@ -680,6 +758,7 @@ export function validateImportPayload(raw: unknown): GrimoireSnapshot | null {
       rolledSpellNames: sanitizeStringList(obj.rolledSpellNames, 100),
       ringSpells: sanitizeRingSpells(obj.ringSpells),
       spellSlots: sanitizeSpellSlots(obj.spellSlots, cleanConfig.casterLevel),
+      sorcery: sanitizeSorcery(obj.sorcery, cleanConfig.casterLevel),
       concentrationSpell: sanitizeConcentrationSpell(obj.concentrationSpell),
       rollHistory: sanitizeRollHistory(obj.rollHistory),
       config: cleanConfig,
@@ -732,6 +811,7 @@ export function validateImportPayload(raw: unknown): GrimoireSnapshot | null {
       rolledSpellNames: sanitizeStringList(legacyActive, 100),
       ringSpells: [],
       spellSlots: sanitizeSpellSlots(undefined, cleanConfig.casterLevel),
+      sorcery: sanitizeSorcery(undefined, cleanConfig.casterLevel),
       concentrationSpell: null,
       rollHistory: [],
       config: cleanConfig,

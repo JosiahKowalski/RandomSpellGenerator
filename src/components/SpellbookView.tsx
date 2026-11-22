@@ -18,21 +18,13 @@ import {
   LevelShortfall,
   RandomizerConfig,
   RollHistoryEntry,
+  SorceryState,
   Spell,
   SpellFilterTab,
   SpellSlotState,
 } from "../types/spell";
-import {
-  casterLevelToMaxSpellLevel,
-  DND_CLASSES,
-  MAGIC_SCHOOLS,
-  SPELL_LEVELS,
-} from "../lib/constants";
-import {
-  getEffectiveMaxSlots,
-  getTotalPlannedRolls,
-  summarizeWeights,
-} from "../lib/spellEngine";
+import { SPELL_LEVELS } from "../lib/constants";
+import { getEffectiveMaxSlots, getTotalPlannedRolls } from "../lib/spellEngine";
 import { SpellSlotsPanel } from "./SpellSlotsPanel";
 
 interface SpellbookViewProps {
@@ -43,6 +35,7 @@ interface SpellbookViewProps {
   config: RandomizerConfig;
   shortfalls: LevelShortfall[];
   slotState: SpellSlotState;
+  sorcery: SorceryState;
   concentrationSpell: string | null;
   rollHistory: RollHistoryEntry[];
   lastSlotFlash?: { level: number; seq: number } | null;
@@ -52,13 +45,15 @@ interface SpellbookViewProps {
   onToggleKnown: (spellName: string) => void;
   onAddKnownSpell: (spellName: string) => void;
   onOpenSpell: (spell: Spell) => void;
-  onUpdateConfig: (next: RandomizerConfig) => void;
   onOpenRules: () => void;
+  onOpenMetamagic: () => void;
   onCastSpell: (spell: Spell, slotLevel: number | null) => void;
   onExpendSlot: (level: number) => void;
   onRecoverSlot: (level: number) => void;
   onSetCustomMaxSlot: (level: number, nextMax: number) => void;
   onResetSlotDefaults: () => void;
+  onSpendSorceryPoints: (amount: number, label?: string) => void;
+  onRegainSorceryPoints: (amount: number) => void;
   onLongRest: () => void;
   onDropConcentration: () => void;
   onRestoreRollHistory: (entryId: string) => void;
@@ -93,6 +88,7 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
   config,
   shortfalls,
   slotState,
+  sorcery,
   concentrationSpell,
   rollHistory,
   lastSlotFlash,
@@ -102,13 +98,15 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
   onToggleKnown,
   onAddKnownSpell,
   onOpenSpell,
-  onUpdateConfig,
   onOpenRules,
+  onOpenMetamagic,
   onCastSpell,
   onExpendSlot,
   onRecoverSlot,
   onSetCustomMaxSlot,
   onResetSlotDefaults,
+  onSpendSorceryPoints,
+  onRegainSorceryPoints,
   onLongRest,
   onDropConcentration,
   onRestoreRollHistory,
@@ -116,11 +114,15 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
 }) => {
   const [filterTab, setFilterTab] = useState<SpellFilterTab>("all");
   const [activeSearch, setActiveSearch] = useState("");
+  const [isAddKnownOpen, setIsAddKnownOpen] = useState(false);
   const [knownAddQuery, setKnownAddQuery] = useState("");
-  const [showKnownDropdown, setShowKnownDropdown] = useState(false);
-  const [showAllHistory, setShowAllHistory] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [castEffects, setCastEffects] = useState<Record<string, number>>({});
+
   const castTimersRef = useRef<Record<string, number>>({});
+  const addKnownPopoverRef = useRef<HTMLDivElement | null>(null);
+  const addKnownInputRef = useRef<HTMLInputElement | null>(null);
+  const historyPopoverRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const timers = castTimersRef.current;
@@ -128,6 +130,57 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
       Object.values(timers).forEach((timerId) => window.clearTimeout(timerId));
     };
   }, []);
+
+  // Auto-focus Add Known search input when popover opens
+  useEffect(() => {
+    if (isAddKnownOpen) {
+      window.setTimeout(() => addKnownInputRef.current?.focus(), 20);
+    }
+  }, [isAddKnownOpen]);
+
+  // Close popovers on outside click or Escape
+  useEffect(() => {
+    if (!isAddKnownOpen && !isHistoryOpen) return;
+
+    const handlePointerDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        isAddKnownOpen &&
+        addKnownPopoverRef.current &&
+        !addKnownPopoverRef.current.contains(target)
+      ) {
+        setIsAddKnownOpen(false);
+      }
+      if (
+        isHistoryOpen &&
+        historyPopoverRef.current &&
+        !historyPopoverRef.current.contains(target)
+      ) {
+        setIsHistoryOpen(false);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setIsAddKnownOpen(false);
+        setIsHistoryOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isAddKnownOpen, isHistoryOpen]);
+
+  // Close history popover automatically if history becomes empty
+  useEffect(() => {
+    if (rollHistory.length === 0 && isHistoryOpen) {
+      setIsHistoryOpen(false);
+    }
+  }, [rollHistory.length, isHistoryOpen]);
 
   const triggerCardCast = (spell: Spell, slotLevel: number | null) => {
     onCastSpell(spell, slotLevel);
@@ -223,197 +276,291 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
 
   const totalPlannedRolls = getTotalPlannedRolls(config);
   const activeLevelMeta = SPELL_LEVELS[config.maxSpellLevel];
-
-  const handleQuickCasterLevelChange = (newLevel: number) => {
-    const clamped = Math.max(1, Math.min(20, newLevel));
-    onUpdateConfig({
-      ...config,
-      casterLevel: clamped,
-      maxSpellLevel: casterLevelToMaxSpellLevel(clamped),
-    });
-  };
+  const totalActiveCount = knownSpells.length + rolledSpells.length;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-start">
-      {/* Main Reading Column */}
-      <div className="lg:col-span-8 space-y-8">
-        {/* Editorial Heading & Quick-Add Known Spells */}
-        <section className="space-y-5">
-          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pb-5 border-b border-limestone dark:border-charcoal-border">
-            <div>
+      {/* Main Reading Column: Active Spellbook */}
+      <div className="lg:col-span-8 space-y-6">
+        {/* Compact Editorial Header + Unified Toolbar */}
+        <section className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3 pb-4 border-b border-limestone dark:border-charcoal-border">
+            <div className="min-w-0">
               <p className="text-xs text-ink-muted dark:text-ash font-mono tabular-nums">
-                Caster Lv. {config.casterLevel} · Up to{" "}
-                {activeLevelMeta?.shortLabel} Level · {knownSpells.length} Known ·{" "}
-                {rolledSpells.length} Rolled
+                Lv. {config.casterLevel} · Up to {activeLevelMeta?.shortLabel} ·{" "}
+                {knownSpells.length} Known · {rolledSpells.length} Rolled
               </p>
               <h1 className="font-serif text-3xl sm:text-4xl font-semibold text-ink dark:text-parchment mt-1">
                 Active Spellbook
               </h1>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {rollHistory.length > 0 && (
+                <div className="relative" ref={historyPopoverRef}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsHistoryOpen((prev) => !prev);
+                      setIsAddKnownOpen(false);
+                    }}
+                    aria-expanded={isHistoryOpen}
+                    className={`h-9 px-3 inline-flex items-center gap-1.5 rounded-md border text-xs font-medium transition-colors whitespace-nowrap ${
+                      isHistoryOpen
+                        ? "border-lapis text-lapis bg-linen dark:border-lapis-dark dark:text-lapis-dark dark:bg-soot"
+                        : "border-limestone dark:border-charcoal-border text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment hover:bg-linen dark:hover:bg-soot"
+                    }`}
+                  >
+                    <History className="w-3.5 h-3.5" />
+                    <span className="font-mono tabular-nums">
+                      History ({rollHistory.length})
+                    </span>
+                  </button>
+
+                  {isHistoryOpen && (
+                    <div className="absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-2rem)] rounded-lg border border-limestone dark:border-charcoal-border bg-paper dark:bg-soot shadow-xl z-40 overflow-hidden">
+                      <div className="px-3.5 py-2.5 border-b border-limestone dark:border-charcoal-border flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-ink dark:text-parchment">
+                          Previous Rolls
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onClearRollHistory();
+                            setIsHistoryOpen(false);
+                          }}
+                          className="text-xs text-ink-muted dark:text-ash hover:text-sienna dark:hover:text-brass transition-colors"
+                        >
+                          Clear all
+                        </button>
+                      </div>
+
+                      <div className="max-h-72 overflow-y-auto divide-y divide-limestone/70 dark:divide-charcoal-border/70">
+                        {rollHistory.map((entry) => {
+                          const preview = entry.rolledSpellNames
+                            .slice(0, 3)
+                            .join(", ");
+                          const extra = Math.max(
+                            0,
+                            entry.rolledSpellNames.length - 3
+                          );
+                          return (
+                            <div
+                              key={entry.id}
+                              className="px-3.5 py-2.5 flex items-start justify-between gap-3"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-mono tabular-nums text-ink dark:text-parchment">
+                                  {formatHistoryTimestamp(entry.rolledAt)} ·{" "}
+                                  {entry.rolledSpellNames.length} spell
+                                  {entry.rolledSpellNames.length === 1
+                                    ? ""
+                                    : "s"}
+                                </p>
+                                <p className="text-xs text-ink-muted dark:text-ash truncate mt-0.5">
+                                  {preview}
+                                  {extra > 0 ? ` +${extra} more` : ""}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onRestoreRollHistory(entry.id);
+                                  setIsHistoryOpen(false);
+                                }}
+                                className="h-7 px-2.5 inline-flex items-center gap-1 rounded border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-xs font-medium text-ink dark:text-parchment hover:border-lapis hover:text-lapis dark:hover:border-lapis-dark dark:hover:text-lapis-dark transition-colors shrink-0"
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                <span>Restore</span>
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {rolledSpells.length > 0 && (
                 <button
                   type="button"
                   onClick={onClearRolled}
-                  className="h-10 px-3.5 inline-flex items-center gap-2 rounded-md border border-limestone dark:border-charcoal-border text-sm text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment hover:bg-linen dark:hover:bg-soot transition-colors whitespace-nowrap"
+                  className="h-9 px-3 inline-flex items-center gap-1.5 rounded-md border border-limestone dark:border-charcoal-border text-xs font-medium text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment hover:bg-linen dark:hover:bg-soot transition-colors whitespace-nowrap"
                 >
-                  <Trash2 className="w-4 h-4" />
+                  <Trash2 className="w-3.5 h-3.5" />
                   <span>Clear Rolled</span>
                 </button>
               )}
+
               <button
                 type="button"
-                onClick={onRollAll}
-                className="h-10 px-4 inline-flex items-center gap-2 rounded-md bg-lapis text-white hover:bg-blue-800 dark:bg-lapis-dark dark:text-obsidian dark:hover:bg-blue-300 text-sm font-medium transition-colors whitespace-nowrap"
+                onClick={onOpenRules}
+                className="h-9 px-3 inline-flex items-center gap-1.5 rounded-md border border-limestone dark:border-charcoal-border text-xs font-medium text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment hover:bg-linen dark:hover:bg-soot transition-colors whitespace-nowrap"
               >
-                <RefreshCw className="w-4 h-4" />
-                <span>Roll Random Spells</span>
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                <span>Rules</span>
               </button>
             </div>
           </div>
 
-          {/* Spell Slots & Concentration Tracker */}
-          <SpellSlotsPanel
-            casterLevel={config.casterLevel}
-            slotState={slotState}
-            concentrationSpell={concentrationSpell}
-            concentrationSpellObj={concentrationSpellObj}
-            lastSlotFlash={lastSlotFlash}
-            onExpendSlot={onExpendSlot}
-            onRecoverSlot={onRecoverSlot}
-            onSetCustomMaxSlot={onSetCustomMaxSlot}
-            onResetSlotDefaults={onResetSlotDefaults}
-            onLongRest={onLongRest}
-            onDropConcentration={onDropConcentration}
-            onOpenSpell={onOpenSpell}
-          />
-
-          {/* Controls Row: Quick-Add Known Spell + Filter Tabs */}
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
-            {/* Add Known Spell Autocomplete */}
-            <div className="md:col-span-7 relative">
-              <label htmlFor="add-known-spell-input" className="sr-only">
-                Add a known permanent spell
+          {/* Single Unified Toolbar: Filter Active Spells + Segmented Filter + Add Known Popover */}
+          <div className="flex flex-col md:flex-row md:items-center gap-2.5">
+            {/* Filter Active Spells */}
+            <div className="relative flex-1 min-w-0">
+              <label htmlFor="filter-active-spells" className="sr-only">
+                Filter active spells
               </label>
-              <Plus className="w-4 h-4 text-ink-muted dark:text-ash absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <Search className="w-4 h-4 text-ink-muted dark:text-ash absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
-                id="add-known-spell-input"
-                type="text"
-                value={knownAddQuery}
-                onChange={(e) => {
-                  setKnownAddQuery(e.target.value);
-                  setShowKnownDropdown(true);
-                }}
-                onFocus={() => setShowKnownDropdown(true)}
-                onBlur={() => setTimeout(() => setShowKnownDropdown(false), 180)}
-                placeholder="Add a permanent known spell (e.g., Shield, Misty Step)..."
-                className="w-full h-11 pl-10 pr-9 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-soot text-sm text-ink dark:text-parchment placeholder:text-ink-muted/70 dark:placeholder:text-ash/60 focus:outline-none focus:ring-2 focus:ring-lapis dark:focus:ring-lapis-dark"
-              />
-              {knownAddQuery && (
-                <button
-                  type="button"
-                  onClick={() => setKnownAddQuery("")}
-                  aria-label="Clear known spell search"
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              )}
-
-              {showKnownDropdown && knownAddQuery.trim().length >= 2 && (
-                <div className="absolute left-0 right-0 top-full mt-1.5 bg-paper dark:bg-soot border border-limestone dark:border-charcoal-border rounded-md shadow-xl z-40 overflow-hidden">
-                  {addKnownResults.length > 0 ? (
-                    addKnownResults.map((spell) => (
-                      <button
-                        key={spell.id}
-                        type="button"
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => {
-                          onAddKnownSpell(spell.name);
-                          setKnownAddQuery("");
-                          setShowKnownDropdown(false);
-                        }}
-                        className="w-full px-4 py-2.5 text-left flex items-center justify-between gap-3 border-b border-limestone/60 dark:border-charcoal-border/60 last:border-0 hover:bg-linen dark:hover:bg-obsidian transition-colors"
-                      >
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-ink dark:text-parchment truncate">
-                            {spell.name}
-                          </p>
-                          <p className="text-xs text-ink-muted dark:text-ash truncate">
-                            {SPELL_LEVELS[spell.levelIndex]?.shortLabel} ·{" "}
-                            {spell.schoolBase}
-                            {spell.source ? ` · ${spell.source}` : ""}
-                          </p>
-                        </div>
-                        <span className="text-xs font-medium text-lapis dark:text-lapis-dark shrink-0">
-                          Add Known
-                        </span>
-                      </button>
-                    ))
-                  ) : (
-                    <p className="px-4 py-3 text-sm text-ink-muted dark:text-ash">
-                      No matching spells found outside your known list.
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Active View Segmented Filter */}
-            <div className="md:col-span-5 flex items-center gap-1 p-1 rounded-md bg-linen dark:bg-soot border border-limestone dark:border-charcoal-border">
-              {(
-                [
-                  {
-                    id: "all",
-                    label: `All (${knownSpells.length + rolledSpells.length})`,
-                  },
-                  { id: "rolled", label: `Rolled (${rolledSpells.length})` },
-                  { id: "known", label: `Known (${knownSpells.length})` },
-                ] as const
-              ).map((tab) => {
-                const active = filterTab === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setFilterTab(tab.id)}
-                    className={`flex-1 h-9 px-2 rounded text-xs font-medium whitespace-nowrap transition-colors ${
-                      active
-                        ? "bg-paper dark:bg-obsidian text-ink dark:text-parchment shadow-xs"
-                        : "text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment"
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Search Within Active Spellbook (shown when spells exist) */}
-          {knownSpells.length + rolledSpells.length > 4 && (
-            <div className="relative">
-              <Search className="w-4 h-4 text-ink-muted dark:text-ash absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
+                id="filter-active-spells"
                 type="text"
                 value={activeSearch}
                 onChange={(e) => setActiveSearch(e.target.value)}
-                placeholder="Filter your active spells by name, school, or casting time..."
-                className="w-full h-10 pl-10 pr-9 rounded-md border border-limestone dark:border-charcoal-border bg-transparent text-sm text-ink dark:text-parchment placeholder:text-ink-muted/70 dark:placeholder:text-ash/60 focus:outline-none focus:ring-2 focus:ring-lapis dark:focus:ring-lapis-dark"
+                placeholder="Filter active spells by name, school, or casting time..."
+                className="w-full h-10 pl-9 pr-8 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-soot text-sm text-ink dark:text-parchment placeholder:text-ink-muted/70 dark:placeholder:text-ash/60 focus:outline-none focus:ring-2 focus:ring-lapis dark:focus:ring-lapis-dark"
               />
               {activeSearch && (
                 <button
                   type="button"
                   onClick={() => setActiveSearch("")}
                   aria-label="Clear active spell filter"
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment"
                 >
-                  <X className="w-4 h-4" />
+                  <X className="w-3.5 h-3.5" />
                 </button>
               )}
             </div>
-          )}
+
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Segmented Filter */}
+              <div className="flex-1 md:flex-none flex items-center gap-0.5 p-1 rounded-md bg-linen dark:bg-soot border border-limestone dark:border-charcoal-border">
+                {(
+                  [
+                    { id: "all", label: `All (${totalActiveCount})` },
+                    { id: "rolled", label: `Rolled (${rolledSpells.length})` },
+                    { id: "known", label: `Known (${knownSpells.length})` },
+                  ] as const
+                ).map((tab) => {
+                  const active = filterTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setFilterTab(tab.id)}
+                      className={`h-8 px-2.5 rounded text-xs font-medium whitespace-nowrap transition-colors ${
+                        active
+                          ? "bg-paper dark:bg-obsidian text-ink dark:text-parchment shadow-xs"
+                          : "text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment"
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Add Known Button + Anchored Popover */}
+              <div className="relative shrink-0" ref={addKnownPopoverRef}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAddKnownOpen((prev) => !prev);
+                    setIsHistoryOpen(false);
+                  }}
+                  aria-expanded={isAddKnownOpen}
+                  className={`h-10 px-3 inline-flex items-center gap-1.5 rounded-md border text-xs font-medium whitespace-nowrap transition-colors ${
+                    isAddKnownOpen
+                      ? "border-sienna text-sienna bg-linen dark:border-brass dark:text-brass dark:bg-soot"
+                      : "border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-ink dark:text-parchment hover:border-sienna hover:text-sienna dark:hover:border-brass dark:hover:text-brass"
+                  }`}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Known</span>
+                </button>
+
+                {isAddKnownOpen && (
+                  <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 max-w-[calc(100vw-2rem)] rounded-lg border border-limestone dark:border-charcoal-border bg-paper dark:bg-soot shadow-xl z-40 overflow-hidden">
+                    <div className="p-2.5 border-b border-limestone dark:border-charcoal-border flex items-center gap-2">
+                      <div className="relative flex-1 min-w-0">
+                        <Search className="w-3.5 h-3.5 text-ink-muted dark:text-ash absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          ref={addKnownInputRef}
+                          type="text"
+                          value={knownAddQuery}
+                          onChange={(e) => setKnownAddQuery(e.target.value)}
+                          placeholder="Search 5e spells to lock (e.g., Shield)..."
+                          className="w-full h-9 pl-8 pr-7 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-sm text-ink dark:text-parchment placeholder:text-ink-muted/70 dark:placeholder:text-ash/60 focus:outline-none focus:ring-2 focus:ring-lapis dark:focus:ring-lapis-dark"
+                        />
+                        {knownAddQuery && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setKnownAddQuery("");
+                              addKnownInputRef.current?.focus();
+                            }}
+                            aria-label="Clear search"
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsAddKnownOpen(false)}
+                        aria-label="Close add known popover"
+                        className="h-9 w-8 inline-flex items-center justify-center rounded text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {knownAddQuery.trim().length < 2 ? (
+                      <p className="px-3.5 py-3 text-xs text-ink-muted dark:text-ash">
+                        Type at least 2 characters to lock a permanent known
+                        spell. Known spells stay pinned when you reroll.
+                      </p>
+                    ) : addKnownResults.length > 0 ? (
+                      <div className="max-h-72 overflow-y-auto divide-y divide-limestone/60 dark:divide-charcoal-border/60">
+                        {addKnownResults.map((spell) => (
+                          <button
+                            key={spell.id}
+                            type="button"
+                            onClick={() => {
+                              onAddKnownSpell(spell.name);
+                              setKnownAddQuery("");
+                              addKnownInputRef.current?.focus();
+                            }}
+                            className="w-full px-3.5 py-2.5 text-left flex items-center justify-between gap-3 hover:bg-linen dark:hover:bg-obsidian transition-colors"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-ink dark:text-parchment truncate">
+                                {spell.name}
+                              </p>
+                              <p className="text-xs text-ink-muted dark:text-ash truncate">
+                                {SPELL_LEVELS[spell.levelIndex]?.shortLabel} ·{" "}
+                                {spell.schoolBase}
+                                {spell.source ? ` · ${spell.source}` : ""}
+                              </p>
+                            </div>
+                            <span className="inline-flex items-center gap-1 text-xs font-medium text-sienna dark:text-brass shrink-0">
+                              <Lock className="w-3 h-3" />
+                              Lock
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="px-3.5 py-3 text-xs text-ink-muted dark:text-ash">
+                        No matching spells found outside your known list.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
 
           {/* Shortfall Warning if any level ran out of eligible spells */}
           {shortfalls.length > 0 && (
@@ -449,17 +596,17 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
         {combinedEntries.length === 0 ? (
           <div className="border border-dashed border-limestone dark:border-charcoal-border rounded-lg py-16 px-6 text-center space-y-4">
             <h2 className="font-serif text-2xl font-semibold text-ink dark:text-parchment">
-              {knownSpells.length + rolledSpells.length === 0
+              {totalActiveCount === 0
                 ? "No spells yet"
                 : "No spells match this filter"}
             </h2>
             <p className="text-sm text-ink-muted dark:text-ash max-w-md mx-auto leading-relaxed">
-              {knownSpells.length + rolledSpells.length === 0
-                ? "Add your permanent known spells above, then roll random spells on top with one click."
+              {totalActiveCount === 0
+                ? "Lock your permanent known spells with Add Known, or roll a fresh random spellbook with one click."
                 : "Switch tabs or clear your search phrase to view your active spells."}
             </p>
             <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-              {knownSpells.length + rolledSpells.length === 0 ? (
+              {totalActiveCount === 0 ? (
                 <>
                   <button
                     type="button"
@@ -471,11 +618,11 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={onOpenRules}
+                    onClick={() => setIsAddKnownOpen(true)}
                     className="h-10 px-4 inline-flex items-center gap-2 rounded-md border border-limestone dark:border-charcoal-border text-sm font-medium text-ink dark:text-parchment hover:bg-linen dark:hover:bg-soot transition-colors"
                   >
-                    <SlidersHorizontal className="w-4 h-4" />
-                    <span>Customize Rules</span>
+                    <Plus className="w-4 h-4" />
+                    <span>Add Known Spell</span>
                   </button>
                 </>
               ) : (
@@ -493,12 +640,14 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
             </div>
           </div>
         ) : (
-          <div className="space-y-9">
+          <div className="space-y-8">
             {SPELL_LEVELS.map((lvl) => {
               const entries = groupedByLevel.get(lvl.index);
               if (!entries || entries.length === 0) return null;
 
-              const knownCount = entries.filter((e) => e.kind === "known").length;
+              const knownCount = entries.filter(
+                (e) => e.kind === "known"
+              ).length;
               const rolledCount = entries.filter(
                 (e) => e.kind === "rolled"
               ).length;
@@ -514,7 +663,7 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
               );
 
               return (
-                <section key={lvl.key} className="space-y-4">
+                <section key={lvl.key} className="space-y-3.5">
                   <div className="flex items-baseline justify-between gap-4 pb-2 border-b border-limestone dark:border-charcoal-border">
                     <h2 className="font-serif text-xl font-semibold text-ink dark:text-parchment">
                       {lvl.heading}
@@ -796,234 +945,40 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
         )}
       </div>
 
-      {/* Right Summary Rail: Quick Roll Controls & Roll History */}
-      <div className="lg:col-span-4 lg:sticky lg:top-24 space-y-6">
-        <aside className="border border-limestone dark:border-charcoal-border rounded-lg bg-linen/60 dark:bg-soot p-6 space-y-6">
-          <div className="flex items-center justify-between gap-2 pb-4 border-b border-limestone dark:border-charcoal-border">
-            <h2 className="font-serif text-lg font-semibold text-ink dark:text-parchment">
-              Roll Configuration
-            </h2>
-            <button
-              type="button"
-              onClick={onOpenRules}
-              className="text-xs font-medium text-lapis dark:text-lapis-dark hover:underline whitespace-nowrap"
-            >
-              Edit Rules
-            </button>
-          </div>
+      {/* Sticky Right Rail: Combat Resources (Concentration, Spell Slots, Sorcery Points) */}
+      <aside className="lg:col-span-4 lg:sticky lg:top-24 space-y-3">
+        <SpellSlotsPanel
+          casterLevel={config.casterLevel}
+          slotState={slotState}
+          sorcery={sorcery}
+          concentrationSpell={concentrationSpell}
+          concentrationSpellObj={concentrationSpellObj}
+          lastSlotFlash={lastSlotFlash}
+          onExpendSlot={onExpendSlot}
+          onRecoverSlot={onRecoverSlot}
+          onSetCustomMaxSlot={onSetCustomMaxSlot}
+          onResetSlotDefaults={onResetSlotDefaults}
+          onSpendSorceryPoints={onSpendSorceryPoints}
+          onRegainSorceryPoints={onRegainSorceryPoints}
+          onOpenMetamagic={onOpenMetamagic}
+          onLongRest={onLongRest}
+          onDropConcentration={onDropConcentration}
+          onOpenSpell={onOpenSpell}
+        />
 
-          {/* Quick Caster Level Stepper */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-ink-muted dark:text-ash">
-                Caster Level
-              </span>
-              <span className="text-xs font-mono tabular-nums text-ink-muted dark:text-ash">
-                Unlocks up to {activeLevelMeta?.shortLabel}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => handleQuickCasterLevelChange(config.casterLevel - 1)}
-                disabled={config.casterLevel <= 1}
-                aria-label="Decrease caster level"
-                className="h-10 w-10 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-ink dark:text-parchment font-mono text-base hover:bg-linen dark:hover:bg-soot disabled:opacity-40 transition-colors"
-              >
-                −
-              </button>
-              <div className="flex-1 h-10 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian flex items-center justify-center font-mono tabular-nums text-sm font-semibold text-ink dark:text-parchment">
-                Level {config.casterLevel}
-              </div>
-              <button
-                type="button"
-                onClick={() => handleQuickCasterLevelChange(config.casterLevel + 1)}
-                disabled={config.casterLevel >= 20}
-                aria-label="Increase caster level"
-                className="h-10 w-10 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-ink dark:text-parchment font-mono text-base hover:bg-linen dark:hover:bg-soot disabled:opacity-40 transition-colors"
-              >
-                +
-              </button>
-            </div>
-          </div>
-
-          {/* Quick Ritual Casting Toggle */}
-          <div className="flex items-center justify-between gap-3 py-2.5 border-y border-limestone/80 dark:border-charcoal-border/80">
-            <div className="min-w-0">
-              <p className="text-xs font-medium text-ink dark:text-parchment">
-                Ritual Casting
-              </p>
-              <p className="text-[11px] text-ink-muted dark:text-ash">
-                {config.canRitualCast
-                  ? "Can cast ritual spells without a slot"
-                  : "Off — rituals require a spell slot"}
-              </p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={config.canRitualCast}
-              aria-label="Toggle ritual casting"
-              onClick={() =>
-                onUpdateConfig({
-                  ...config,
-                  canRitualCast: !config.canRitualCast,
-                })
-              }
-              className={`relative shrink-0 w-10 h-6 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lapis dark:focus-visible:ring-lapis-dark ${
-                config.canRitualCast
-                  ? "bg-lapis dark:bg-lapis-dark"
-                  : "bg-limestone dark:bg-charcoal-border"
-              }`}
-            >
-              <span
-                className={`block w-4 h-4 rounded-full bg-paper dark:bg-obsidian transition-transform ${
-                  config.canRitualCast ? "translate-x-5" : "translate-x-1"
-                }`}
-              />
-            </button>
-          </div>
-
-          {/* Active Per-Level Quota Breakdown */}
-          <div className="space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-ink-muted dark:text-ash">
-                Spells Per Roll
-              </span>
-              <span className="text-xs font-mono tabular-nums font-medium text-ink dark:text-parchment">
-                {totalPlannedRolls} total
-              </span>
-            </div>
-
-            <div className="divide-y divide-limestone/70 dark:divide-charcoal-border/70 border-y border-limestone dark:border-charcoal-border">
-              {SPELL_LEVELS.slice(0, config.maxSpellLevel + 1).map((lvl) => {
-                const count = Number(config.levelCounts[lvl.key] ?? 0);
-                return (
-                  <div
-                    key={lvl.key}
-                    className="py-1.5 flex items-center justify-between text-xs"
-                  >
-                    <span className="text-ink-muted dark:text-ash">
-                      {lvl.shortLabel}
-                      {lvl.index > 0 ? " Level" : ""}
-                    </span>
-                    <span className="font-mono tabular-nums font-medium text-ink dark:text-parchment">
-                      {count === 0 ? "Skip" : `${count}`}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Active Filter Constraints Summary */}
-          <div className="space-y-2 text-xs text-ink-muted dark:text-ash">
-            <p className="font-medium text-ink dark:text-parchment">
-              Active Odds &amp; Filters
-            </p>
-            <p className="leading-relaxed">
-              <span className="text-ink dark:text-parchment font-medium">
-                Classes:{" "}
-              </span>
-              {summarizeWeights(DND_CLASSES, config.classWeights, "classes")}
-            </p>
-            <p className="leading-relaxed">
-              <span className="text-ink dark:text-parchment font-medium">
-                Schools:{" "}
-              </span>
-              {summarizeWeights(MAGIC_SCHOOLS, config.schoolWeights, "schools")}
-            </p>
-            <p className="leading-relaxed">
-              <span className="text-ink dark:text-parchment font-medium">
-                Exclusions:{" "}
-              </span>
-              {[
-                config.excludeWeaponComponents ? "Weapon components" : null,
-                config.excludeCostlyMaterials ? "Costly materials" : null,
-                config.excludeConcentration ? "Concentration" : null,
-                config.excludeRituals ? "Rituals" : null,
-                config.excludedSources.length > 0
-                  ? `${config.excludedSources.length} sourcebooks`
-                  : null,
-              ]
-                .filter(Boolean)
-                .join(" · ") || "None"}
-            </p>
-            <p className="pt-1 font-mono tabular-nums text-ink dark:text-parchment">
-              {eligiblePoolCount} eligible spells in pool
-            </p>
-          </div>
-        </aside>
-
-        {/* Recent Roll History */}
-        {rollHistory.length > 0 && (
-          <aside className="border border-limestone dark:border-charcoal-border rounded-lg bg-linen/60 dark:bg-soot p-6 space-y-4">
-            <div className="flex items-center justify-between gap-2 pb-3 border-b border-limestone dark:border-charcoal-border">
-              <div className="flex items-center gap-2">
-                <History className="w-4 h-4 text-ink-muted dark:text-ash" />
-                <h2 className="font-serif text-lg font-semibold text-ink dark:text-parchment">
-                  Roll History
-                </h2>
-              </div>
-              <button
-                type="button"
-                onClick={onClearRollHistory}
-                className="text-xs font-medium text-ink-muted dark:text-ash hover:text-sienna dark:hover:text-brass hover:underline whitespace-nowrap"
-              >
-                Clear
-              </button>
-            </div>
-
-            <div className="divide-y divide-limestone/70 dark:divide-charcoal-border/70">
-              {(showAllHistory ? rollHistory : rollHistory.slice(0, 3)).map(
-                (entry) => {
-                  const previewNames = entry.rolledSpellNames.slice(0, 3);
-                  const extraCount =
-                    entry.rolledSpellNames.length - previewNames.length;
-                  return (
-                    <div
-                      key={entry.id}
-                      className="py-3 first:pt-0 last:pb-0 space-y-1.5"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-mono tabular-nums text-ink-muted dark:text-ash truncate">
-                          {formatHistoryTimestamp(entry.rolledAt)} ·{" "}
-                          {entry.rolledSpellNames.length} spell
-                          {entry.rolledSpellNames.length === 1 ? "" : "s"}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => onRestoreRollHistory(entry.id)}
-                          className="h-7 px-2.5 inline-flex items-center gap-1 rounded border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-xs font-medium text-ink dark:text-parchment hover:border-lapis dark:hover:border-lapis-dark hover:text-lapis dark:hover:text-lapis-dark transition-colors whitespace-nowrap shrink-0"
-                        >
-                          <RotateCcw className="w-3 h-3" />
-                          <span>Restore</span>
-                        </button>
-                      </div>
-                      <p className="text-xs text-ink-muted dark:text-ash truncate">
-                        {previewNames.join(", ")}
-                        {extraCount > 0 ? ` +${extraCount} more` : ""}
-                      </p>
-                    </div>
-                  );
-                }
-              )}
-            </div>
-
-            {rollHistory.length > 3 && (
-              <button
-                type="button"
-                onClick={() => setShowAllHistory((prev) => !prev)}
-                className="w-full pt-2 border-t border-limestone dark:border-charcoal-border text-xs font-medium text-lapis dark:text-lapis-dark hover:underline text-left"
-              >
-                {showAllHistory
-                  ? "Show fewer"
-                  : `Show all (${rollHistory.length})`}
-              </button>
-            )}
-          </aside>
-        )}
-      </div>
+        <div className="px-1 flex items-center justify-between gap-3 text-xs text-ink-muted dark:text-ash">
+          <span className="font-mono tabular-nums truncate">
+            Next roll: {totalPlannedRolls} spells · {eligiblePoolCount} eligible
+          </span>
+          <button
+            type="button"
+            onClick={onOpenRules}
+            className="font-medium text-lapis dark:text-lapis-dark hover:underline whitespace-nowrap shrink-0"
+          >
+            Edit Rules
+          </button>
+        </div>
+      </aside>
     </div>
   );
 };
