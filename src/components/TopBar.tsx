@@ -33,6 +33,7 @@ interface TopBarProps {
   onExportJson: () => void;
   onImportJson: (file: File) => void;
   poolCount: number;
+  ringUsedLevels: number;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -54,6 +55,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onExportJson,
   onImportJson,
   poolCount,
+  ringUsedLevels,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -73,6 +75,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   const navItems: Array<{ id: AppView; label: string }> = [
     { id: "spellbook", label: "Spellbook" },
+    { id: "ring", label: `Ring (${ringUsedLevels}/5)` },
     { id: "rules", label: "Rules" },
     { id: "pool", label: `Spell Pool (${poolCount})` },
   ];

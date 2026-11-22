@@ -22,6 +22,16 @@ export interface Spell {
   hasCostlyMaterial: boolean;
 }
 
+export interface StoredRingSpell {
+  id: string;
+  spellName: string;
+  castLevel: number; // 1..5
+  casterName: string;
+  saveDC: string;
+  attackBonus: string;
+  notes: string;
+}
+
 export type MultiClassRule = "lowest" | "average" | "highest";
 
 export type RulePresetId =
@@ -49,6 +59,7 @@ export interface RandomizerConfig {
 export interface GrimoireSnapshot {
   knownSpellNames: string[];
   rolledSpellNames: string[];
+  ringSpells: StoredRingSpell[];
   config: RandomizerConfig;
   updatedAt: string;
 }
@@ -64,6 +75,6 @@ export interface RollResult {
   shortfalls: LevelShortfall[];
 }
 
-export type AppView = "spellbook" | "rules" | "pool";
+export type AppView = "spellbook" | "ring" | "rules" | "pool";
 export type SpellFilterTab = "all" | "rolled" | "known";
 export type ThemeMode = "light" | "dark";

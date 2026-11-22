@@ -14,7 +14,7 @@
     },
     "GrimoireSave": {
       "title": "GrimoireSave",
-      "description": "Compact spell randomizer state storing known spells, current rolled spells, and custom per-level randomizer rules with weighted class and school odds",
+      "description": "Compact spell randomizer state storing known spells, current rolled spells, Ring of Spell Storing entries, and custom per-level randomizer rules",
       "type": "object",
       "properties": {
         "ownerId": {
@@ -30,6 +30,10 @@
         "rolledSpellNames": {
           "type": "array",
           "description": "List of currently active randomized spell names (max 100)"
+        },
+        "ringSpells": {
+          "type": "array",
+          "description": "Spells currently stored inside a Ring of Spell Storing (max 5 entries totaling up to 5 spell levels)"
         },
         "config": {
           "type": "object",
@@ -50,6 +54,7 @@
         "ownerId",
         "knownSpellNames",
         "rolledSpellNames",
+        "ringSpells",
         "config",
         "createdAt",
         "updatedAt"

@@ -13,6 +13,7 @@ import {
   LevelShortfall,
   RandomizerConfig,
   Spell,
+  StoredRingSpell,
   ThemeMode,
 } from "./types/spell";
 import {
@@ -23,10 +24,13 @@ import {
 } from "./lib/constants";
 import {
   filterSpellPool,
+  getRingUsedLevels,
   parseSpellsCSV,
   rerollSingleSpell,
+  RING_MAX_LEVELS,
   rollRandomSpells,
   sanitizeConfig,
+  sanitizeRingSpells,
   sanitizeStringList,
   validateImportPayload,
 } from "./lib/spellEngine";
@@ -41,6 +45,7 @@ import {
 } from "./lib/firebaseClient";
 import { TopBar } from "./components/TopBar";
 import { SpellbookView } from "./components/SpellbookView";
+import { RingOfSpellStoringView } from "./components/RingOfSpellStoringView";
 import { RulesView } from "./components/RulesView";
 import { SpellPoolView } from "./components/SpellPoolView";
 import { SpellReaderModal } from "./components/SpellReaderModal";
@@ -68,6 +73,7 @@ function loadLocalSnapshot(): GrimoireSnapshot {
       return {
         knownSpellNames: [],
         rolledSpellNames: [],
+        ringSpells: [],
         config: { ...DEFAULT_CONFIG },
         updatedAt: new Date().toISOString(),
       };
@@ -76,6 +82,7 @@ function loadLocalSnapshot(): GrimoireSnapshot {
     return {
       knownSpellNames: sanitizeStringList(parsed.knownSpellNames, 400),
       rolledSpellNames: sanitizeStringList(parsed.rolledSpellNames, 100),
+      ringSpells: sanitizeRingSpells(parsed.ringSpells),
       config: sanitizeConfig(parsed.config),
       updatedAt:
         typeof parsed.updatedAt === "string"
@@ -86,6 +93,7 @@ function loadLocalSnapshot(): GrimoireSnapshot {
     return {
       knownSpellNames: [],
       rolledSpellNames: [],
+      ringSpells: [],
       config: { ...DEFAULT_CONFIG },
       updatedAt: new Date().toISOString(),
     };
@@ -104,12 +112,15 @@ export default function App() {
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [isCustomCatalog, setIsCustomCatalog] = useState(false);
 
-  // Grimoire State
+  // Spellbook & Ring State
   const [knownSpellNames, setKnownSpellNames] = useState<string[]>(
     initialLocal.knownSpellNames
   );
   const [rolledSpellNames, setRolledSpellNames] = useState<string[]>(
     initialLocal.rolledSpellNames
+  );
+  const [ringSpells, setRingSpells] = useState<StoredRingSpell[]>(
+    initialLocal.ringSpells
   );
   const [config, setConfig] = useState<RandomizerConfig>(initialLocal.config);
   const [shortfalls, setShortfalls] = useState<LevelShortfall[]>([]);
@@ -198,15 +209,16 @@ export default function App() {
     const snapshot: GrimoireSnapshot = {
       knownSpellNames,
       rolledSpellNames,
+      ringSpells,
       config,
       updatedAt: new Date().toISOString(),
     };
     try {
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(snapshot));
     } catch (err) {
-      console.error("Failed to save grimoire locally:", err);
+      console.error("Failed to save state locally:", err);
     }
-  }, [knownSpellNames, rolledSpellNames, config]);
+  }, [knownSpellNames, rolledSpellNames, ringSpells, config]);
 
   // Validate Firestore connection once on boot & subscribe to auth state
   useEffect(() => {
@@ -246,16 +258,19 @@ export default function App() {
 
           // Auto-hydrate if local workspace is empty so mobile/tablet pickup is seamless
           const localIsEmpty =
-            knownSpellNames.length === 0 && rolledSpellNames.length === 0;
+            knownSpellNames.length === 0 &&
+            rolledSpellNames.length === 0 &&
+            ringSpells.length === 0;
           if (localIsEmpty) {
             setKnownSpellNames(cloudSave.knownSpellNames);
             setRolledSpellNames(cloudSave.rolledSpellNames);
+            setRingSpells(cloudSave.ringSpells);
             setConfig(cloudSave.config);
             showToast("Loaded saved spells from Google Cloud.");
           }
         }
       } catch (err) {
-        console.error("Error checking cloud grimoire:", err);
+        console.error("Error checking cloud save:", err);
       }
     });
 
@@ -384,6 +399,57 @@ export default function App() {
     showToast(`Added ${spellName} to Known Spells.`);
   };
 
+  // Ring of Spell Storing Handlers
+  const ringUsedLevels = useMemo(
+    () => getRingUsedLevels(ringSpells),
+    [ringSpells]
+  );
+  const ringRemainingLevels = Math.max(0, RING_MAX_LEVELS - ringUsedLevels);
+
+  const handleStoreRingSpell = (entry: Omit<StoredRingSpell, "id">) => {
+    if (ringUsedLevels + entry.castLevel > RING_MAX_LEVELS) {
+      showToast("Not enough spell levels left in the Ring of Spell Storing.");
+      return;
+    }
+    const id = `ring-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    setRingSpells((prev) => [...prev, { ...entry, id }]);
+    showToast(`Stored ${entry.spellName} in Ring of Spell Storing.`);
+  };
+
+  const handleQuickStoreInRing = (spell: Spell) => {
+    if (spell.levelIndex < 1 || spell.levelIndex > RING_MAX_LEVELS) return;
+    if (spell.levelIndex > ringRemainingLevels) {
+      showToast("Not enough spell levels left in the Ring of Spell Storing.");
+      return;
+    }
+    handleStoreRingSpell({
+      spellName: spell.name,
+      castLevel: spell.levelIndex,
+      casterName: "",
+      saveDC: "",
+      attackBonus: "",
+      notes: "",
+    });
+  };
+
+  const handleCastRingSpell = (entryId: string) => {
+    const target = ringSpells.find((s) => s.id === entryId);
+    if (!target) return;
+    const previous = [...ringSpells];
+    setRingSpells((prev) => prev.filter((s) => s.id !== entryId));
+    showToast(`Cast ${target.spellName} from the ring.`, "Undo", () => {
+      setRingSpells(previous);
+    });
+  };
+
+  const handleClearRing = () => {
+    const previous = [...ringSpells];
+    setRingSpells([]);
+    showToast("Cleared Ring of Spell Storing.", "Undo", () => {
+      setRingSpells(previous);
+    });
+  };
+
   // CSV Upload & Reset
   const handleUploadCsv = async (file: File) => {
     try {
@@ -443,6 +509,7 @@ export default function App() {
       await saveCloudGrimoire(authUser.uid, {
         knownSpellNames,
         rolledSpellNames,
+        ringSpells,
         config,
         updatedAt: new Date().toISOString(),
       });
@@ -471,6 +538,7 @@ export default function App() {
       }
       setKnownSpellNames(cloudSave.knownSpellNames);
       setRolledSpellNames(cloudSave.rolledSpellNames);
+      setRingSpells(cloudSave.ringSpells);
       setConfig(cloudSave.config);
       setShortfalls([]);
       const ts = new Date(cloudSave.updatedAt);
@@ -511,6 +579,7 @@ export default function App() {
     const snapshot: GrimoireSnapshot = {
       knownSpellNames,
       rolledSpellNames,
+      ringSpells,
       config,
       updatedAt: new Date().toISOString(),
     };
@@ -538,6 +607,7 @@ export default function App() {
       }
       setKnownSpellNames(validated.knownSpellNames);
       setRolledSpellNames(validated.rolledSpellNames);
+      setRingSpells(validated.ringSpells);
       setConfig(validated.config);
       setShortfalls([]);
       showToast("Restored backup from JSON.");
@@ -582,6 +652,7 @@ export default function App() {
         onExportJson={handleExportJson}
         onImportJson={handleImportJson}
         poolCount={eligiblePool.length}
+        ringUsedLevels={ringUsedLevels}
       />
 
       <main className="flex-1 w-full max-w-[1320px] mx-auto px-4 sm:px-6 py-8 sm:py-10">
@@ -643,6 +714,19 @@ export default function App() {
               />
             )}
 
+            {activeView === "ring" && (
+              <RingOfSpellStoringView
+                catalog={catalog}
+                knownSpells={knownSpells}
+                rolledSpells={rolledSpells}
+                ringSpells={ringSpells}
+                onStoreSpell={handleStoreRingSpell}
+                onCastStoredSpell={handleCastRingSpell}
+                onClearRing={handleClearRing}
+                onOpenSpell={setSelectedSpell}
+              />
+            )}
+
             {activeView === "rules" && (
               <RulesView
                 config={config}
@@ -683,9 +767,11 @@ export default function App() {
         spell={selectedSpell}
         isKnown={selectedIsKnown}
         isRolled={selectedIsRolled}
+        ringRemainingLevels={ringRemainingLevels}
         onClose={() => setSelectedSpell(null)}
         onToggleKnown={handleToggleKnown}
         onReroll={handleRerollSingle}
+        onQuickStoreInRing={handleQuickStoreInRing}
       />
 
       {/* Non-intrusive Toast Notification */}

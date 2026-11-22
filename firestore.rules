@@ -28,6 +28,25 @@ service cloud.firestore {
         && (list.size() == 0 || (list[0] is string && list[0].size() <= 120));
     }
 
+    function isValidRingSpellEntry(entry) {
+      return entry is map
+        && entry.keys().hasAll(['id', 'spellName', 'castLevel', 'casterName', 'saveDC', 'attackBonus', 'notes'])
+        && entry.keys().hasOnly(['id', 'spellName', 'castLevel', 'casterName', 'saveDC', 'attackBonus', 'notes'])
+        && entry.id is string && entry.id.size() > 0 && entry.id.size() <= 80
+        && entry.spellName is string && entry.spellName.size() > 0 && entry.spellName.size() <= 120
+        && entry.castLevel is int && entry.castLevel >= 1 && entry.castLevel <= 5
+        && entry.casterName is string && entry.casterName.size() <= 60
+        && entry.saveDC is string && entry.saveDC.size() <= 16
+        && entry.attackBonus is string && entry.attackBonus.size() <= 16
+        && entry.notes is string && entry.notes.size() <= 200;
+    }
+
+    function isValidRingSpells(list) {
+      return list is list
+        && list.size() <= 5
+        && (list.size() == 0 || isValidRingSpellEntry(list[0]));
+    }
+
     function isValidConfig(cfg) {
       return cfg is map
         && cfg.keys().hasAll([
@@ -80,6 +99,7 @@ service cloud.firestore {
           'ownerId',
           'knownSpellNames',
           'rolledSpellNames',
+          'ringSpells',
           'config',
           'createdAt',
           'updatedAt'
@@ -88,6 +108,7 @@ service cloud.firestore {
           'ownerId',
           'knownSpellNames',
           'rolledSpellNames',
+          'ringSpells',
           'config',
           'createdAt',
           'updatedAt'
@@ -98,6 +119,7 @@ service cloud.firestore {
         && data.ownerId == userId
         && isValidStringList(data.knownSpellNames, 400)
         && isValidStringList(data.rolledSpellNames, 100)
+        && isValidRingSpells(data.ringSpells)
         && isValidConfig(data.config)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -140,6 +162,7 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'knownSpellNames',
           'rolledSpellNames',
+          'ringSpells',
           'config',
           'updatedAt'
         ]);

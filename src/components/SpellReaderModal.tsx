@@ -1,6 +1,6 @@
 import React, { useEffect } from "react";
 import { createPortal } from "react-dom";
-import { ExternalLink, Lock, RefreshCw, Unlock, X } from "lucide-react";
+import { ExternalLink, Lock, Plus, RefreshCw, Unlock, X } from "lucide-react";
 import { Spell } from "../types/spell";
 import { SPELL_LEVELS } from "../lib/constants";
 import { getSpell5eToolsUrl } from "../lib/spellEngine";
@@ -9,18 +9,22 @@ interface SpellReaderModalProps {
   spell: Spell | null;
   isKnown: boolean;
   isRolled: boolean;
+  ringRemainingLevels: number;
   onClose: () => void;
   onToggleKnown: (spellName: string) => void;
   onReroll?: (spellName: string) => void;
+  onQuickStoreInRing?: (spell: Spell) => void;
 }
 
 export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
   spell,
   isKnown,
   isRolled,
+  ringRemainingLevels,
   onClose,
   onToggleKnown,
   onReroll,
+  onQuickStoreInRing,
 }) => {
   useEffect(() => {
     if (!spell) return;
@@ -198,6 +202,20 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
                 <span>Reroll</span>
               </button>
             )}
+
+            {onQuickStoreInRing &&
+              spell.levelIndex >= 1 &&
+              spell.levelIndex <= 5 &&
+              spell.levelIndex <= ringRemainingLevels && (
+                <button
+                  type="button"
+                  onClick={() => onQuickStoreInRing(spell)}
+                  className="h-10 px-4 inline-flex items-center gap-2 rounded-md text-sm font-medium border border-limestone dark:border-charcoal-border text-ink dark:text-parchment bg-paper dark:bg-soot hover:bg-linen dark:hover:bg-obsidian transition-colors whitespace-nowrap"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Store in Ring</span>
+                </button>
+              )}
           </div>
 
           <a

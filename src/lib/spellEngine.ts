@@ -7,6 +7,7 @@ import {
   RollResult,
   RulePresetId,
   Spell,
+  StoredRingSpell,
 } from "../types/spell";
 import {
   casterLevelToMaxSpellLevel,
@@ -505,6 +506,62 @@ export function sanitizeStringList(raw: unknown, maxLen: number): string[] {
   return out;
 }
 
+export const RING_MAX_LEVELS = 5;
+
+export function getRingUsedLevels(ringSpells: StoredRingSpell[]): number {
+  return ringSpells.reduce((sum, entry) => sum + entry.castLevel, 0);
+}
+
+export function sanitizeRingSpells(raw: unknown): StoredRingSpell[] {
+  if (!Array.isArray(raw)) return [];
+  const out: StoredRingSpell[] = [];
+  let usedLevels = 0;
+
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i];
+    if (!item || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    const spellName =
+      typeof obj.spellName === "string" ? obj.spellName.trim().slice(0, 120) : "";
+    if (!spellName) continue;
+
+    const rawLevel =
+      typeof obj.castLevel === "number" && Number.isFinite(obj.castLevel)
+        ? Math.round(obj.castLevel)
+        : 1;
+    const castLevel = Math.max(1, Math.min(RING_MAX_LEVELS, rawLevel));
+
+    if (usedLevels + castLevel > RING_MAX_LEVELS) continue;
+
+    const id =
+      typeof obj.id === "string" && obj.id.trim()
+        ? obj.id.trim().slice(0, 80)
+        : `ring-${i}-${spellName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+
+    out.push({
+      id,
+      spellName,
+      castLevel,
+      casterName:
+        typeof obj.casterName === "string"
+          ? obj.casterName.trim().slice(0, 60)
+          : "",
+      saveDC:
+        typeof obj.saveDC === "string" ? obj.saveDC.trim().slice(0, 16) : "",
+      attackBonus:
+        typeof obj.attackBonus === "string"
+          ? obj.attackBonus.trim().slice(0, 16)
+          : "",
+      notes:
+        typeof obj.notes === "string" ? obj.notes.trim().slice(0, 200) : "",
+    });
+    usedLevels += castLevel;
+    if (out.length >= RING_MAX_LEVELS || usedLevels >= RING_MAX_LEVELS) break;
+  }
+
+  return out;
+}
+
 export function validateImportPayload(raw: unknown): GrimoireSnapshot | null {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
@@ -512,12 +569,14 @@ export function validateImportPayload(raw: unknown): GrimoireSnapshot | null {
   const isNewFormat =
     Array.isArray(obj.knownSpellNames) ||
     Array.isArray(obj.rolledSpellNames) ||
+    Array.isArray(obj.ringSpells) ||
     (obj.config && typeof obj.config === "object");
 
   if (isNewFormat) {
     return {
       knownSpellNames: sanitizeStringList(obj.knownSpellNames, 400),
       rolledSpellNames: sanitizeStringList(obj.rolledSpellNames, 100),
+      ringSpells: sanitizeRingSpells(obj.ringSpells),
       config: sanitizeConfig(obj.config),
       updatedAt:
         typeof obj.updatedAt === "string"
@@ -549,6 +608,7 @@ export function validateImportPayload(raw: unknown): GrimoireSnapshot | null {
     return {
       knownSpellNames: sanitizeStringList(obj.permanentSpellNames, 400),
       rolledSpellNames: sanitizeStringList(legacyActive, 100),
+      ringSpells: [],
       config: sanitizeConfig({
         casterLevel: legacyLevel,
         maxSpellLevel: casterLevelToMaxSpellLevel(legacyLevel),

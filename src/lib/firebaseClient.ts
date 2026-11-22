@@ -12,7 +12,11 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { GrimoireSnapshot } from "../types/spell";
-import { sanitizeConfig, sanitizeStringList } from "./spellEngine";
+import {
+  sanitizeConfig,
+  sanitizeRingSpells,
+  sanitizeStringList,
+} from "./spellEngine";
 
 interface FirebaseAppletConfig {
   projectId?: string;
@@ -154,6 +158,7 @@ export async function loadCloudGrimoire(
     return {
       knownSpellNames: sanitizeStringList(data.knownSpellNames, 400),
       rolledSpellNames: sanitizeStringList(data.rolledSpellNames, 100),
+      ringSpells: sanitizeRingSpells(data.ringSpells),
       config: sanitizeConfig(data.config),
       updatedAt: updatedTs?.toDate
         ? updatedTs.toDate().toISOString()
@@ -173,6 +178,7 @@ export async function saveCloudGrimoire(
   const docRef = doc(db, "grimoireSaves", uid);
   const sanitizedKnown = sanitizeStringList(snapshot.knownSpellNames, 400);
   const sanitizedRolled = sanitizeStringList(snapshot.rolledSpellNames, 100);
+  const sanitizedRing = sanitizeRingSpells(snapshot.ringSpells);
   const sanitizedConfig = sanitizeConfig(snapshot.config);
 
   try {
@@ -181,6 +187,7 @@ export async function saveCloudGrimoire(
       await updateDoc(docRef, {
         knownSpellNames: sanitizedKnown,
         rolledSpellNames: sanitizedRolled,
+        ringSpells: sanitizedRing,
         config: sanitizedConfig,
         updatedAt: serverTimestamp(),
       });
@@ -189,6 +196,7 @@ export async function saveCloudGrimoire(
         ownerId: uid,
         knownSpellNames: sanitizedKnown,
         rolledSpellNames: sanitizedRolled,
+        ringSpells: sanitizedRing,
         config: sanitizedConfig,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
