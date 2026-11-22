@@ -1,22 +1,23 @@
 import React, { useMemo, useState } from "react";
 import { ChevronDown, ChevronUp, Lock, Plus, Search, X } from "lucide-react";
-import { Spell } from "../types/spell";
+import { RandomizerConfig, Spell } from "../types/spell";
 import { SPELL_LEVELS } from "../lib/constants";
+import { formatWeightLabel, getSpellWeight } from "../lib/spellEngine";
 
 interface SpellPoolViewProps {
   eligiblePool: Spell[];
   knownSpellNames: string[];
-  maxSpellLevel: number;
+  config: RandomizerConfig;
   onOpenSpell: (spell: Spell) => void;
   onToggleKnown: (spellName: string) => void;
 }
 
-type SortField = "name" | "levelIndex" | "schoolBase" | "source";
+type SortField = "name" | "levelIndex" | "schoolBase" | "weight" | "source";
 
 export const SpellPoolView: React.FC<SpellPoolViewProps> = ({
   eligiblePool,
   knownSpellNames,
-  maxSpellLevel,
+  config,
   onOpenSpell,
   onToggleKnown,
 }) => {
@@ -27,6 +28,8 @@ export const SpellPoolView: React.FC<SpellPoolViewProps> = ({
   const [sortField, setSortField] = useState<SortField>("levelIndex");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
+  const maxSpellLevel = config.maxSpellLevel;
+
   const knownSet = useMemo(
     () => new Set(knownSpellNames.map((n) => n.toLowerCase())),
     [knownSpellNames]
@@ -34,39 +37,56 @@ export const SpellPoolView: React.FC<SpellPoolViewProps> = ({
 
   const visibleSpells = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const list = eligiblePool.filter((spell) => {
-      if (levelFilter === "unlocked" && spell.levelIndex > maxSpellLevel) {
-        return false;
-      }
-      if (typeof levelFilter === "number" && spell.levelIndex !== levelFilter) {
-        return false;
-      }
-      if (!q) return true;
-      return (
-        spell.name.toLowerCase().includes(q) ||
-        spell.school.toLowerCase().includes(q) ||
-        spell.source.toLowerCase().includes(q) ||
-        spell.castingTime.toLowerCase().includes(q)
-      );
-    });
+    const list = eligiblePool
+      .filter((spell) => {
+        if (levelFilter === "unlocked" && spell.levelIndex > maxSpellLevel) {
+          return false;
+        }
+        if (typeof levelFilter === "number" && spell.levelIndex !== levelFilter) {
+          return false;
+        }
+        if (!q) return true;
+        return (
+          spell.name.toLowerCase().includes(q) ||
+          spell.school.toLowerCase().includes(q) ||
+          spell.source.toLowerCase().includes(q) ||
+          spell.castingTime.toLowerCase().includes(q)
+        );
+      })
+      .map((spell) => ({
+        spell,
+        weight: getSpellWeight(spell, config),
+      }));
 
-    return [...list].sort((a, b) => {
+    return list.sort((a, b) => {
       let comp = 0;
       if (sortField === "levelIndex") {
-        comp = a.levelIndex - b.levelIndex || a.name.localeCompare(b.name);
+        comp =
+          a.spell.levelIndex - b.spell.levelIndex ||
+          a.spell.name.localeCompare(b.spell.name);
+      } else if (sortField === "weight") {
+        comp = a.weight - b.weight || a.spell.name.localeCompare(b.spell.name);
       } else {
-        comp = a[sortField].localeCompare(b[sortField]);
+        comp = a.spell[sortField].localeCompare(b.spell[sortField]);
       }
       return sortDir === "asc" ? comp : -comp;
     });
-  }, [eligiblePool, levelFilter, maxSpellLevel, searchQuery, sortField, sortDir]);
+  }, [
+    eligiblePool,
+    levelFilter,
+    maxSpellLevel,
+    searchQuery,
+    sortField,
+    sortDir,
+    config,
+  ]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
       setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
     } else {
       setSortField(field);
-      setSortDir("asc");
+      setSortDir(field === "weight" ? "desc" : "asc");
     }
   };
 
@@ -159,7 +179,7 @@ export const SpellPoolView: React.FC<SpellPoolViewProps> = ({
       <div className="border border-limestone dark:border-charcoal-border rounded-lg overflow-hidden">
         {visibleSpells.length === 0 ? (
           <div className="py-12 px-6 text-center text-sm text-ink-muted dark:text-ash">
-            No spells match the current filters. Try widening your rules or selecting All Levels.
+            No spells match the current filters. Try adjusting your odds in Rules or selecting All Levels.
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -193,6 +213,15 @@ export const SpellPoolView: React.FC<SpellPoolViewProps> = ({
                       School {renderSortIcon("schoolBase")}
                     </button>
                   </th>
+                  <th className="py-2.5 px-4">
+                    <button
+                      type="button"
+                      onClick={() => handleSort("weight")}
+                      className="hover:text-ink dark:hover:text-parchment transition-colors"
+                    >
+                      Odds {renderSortIcon("weight")}
+                    </button>
+                  </th>
                   <th className="py-2.5 px-4 hidden md:table-cell">
                     Casting Time
                   </th>
@@ -209,7 +238,7 @@ export const SpellPoolView: React.FC<SpellPoolViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-limestone/70 dark:divide-charcoal-border/70">
-                {visibleSpells.map((spell) => {
+                {visibleSpells.map(({ spell, weight }) => {
                   const isKnown = knownSet.has(spell.name.toLowerCase());
                   return (
                     <tr
@@ -225,6 +254,19 @@ export const SpellPoolView: React.FC<SpellPoolViewProps> = ({
                       </td>
                       <td className="py-2.5 px-4 text-xs text-ink-muted dark:text-ash hidden sm:table-cell">
                         {spell.schoolBase}
+                      </td>
+                      <td className="py-2.5 px-4 text-xs font-mono tabular-nums whitespace-nowrap">
+                        <span
+                          className={
+                            weight > 1
+                              ? "text-lapis dark:text-lapis-dark font-medium"
+                              : weight < 1
+                              ? "text-sienna dark:text-brass"
+                              : "text-ink-muted dark:text-ash"
+                          }
+                        >
+                          {formatWeightLabel(weight)}
+                        </span>
                       </td>
                       <td className="py-2.5 px-4 text-xs text-ink-muted dark:text-ash hidden md:table-cell">
                         {spell.castingTime}

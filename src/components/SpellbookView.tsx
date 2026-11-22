@@ -18,9 +18,11 @@ import {
 } from "../types/spell";
 import {
   casterLevelToMaxSpellLevel,
+  DND_CLASSES,
+  MAGIC_SCHOOLS,
   SPELL_LEVELS,
 } from "../lib/constants";
-import { getTotalPlannedRolls } from "../lib/spellEngine";
+import { getTotalPlannedRolls, summarizeWeights } from "../lib/spellEngine";
 
 interface SpellbookViewProps {
   catalog: Spell[];
@@ -590,23 +592,19 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
         {/* Active Filter Constraints Summary */}
         <div className="space-y-2 text-xs text-ink-muted dark:text-ash">
           <p className="font-medium text-ink dark:text-parchment">
-            Active Filters
+            Active Odds &amp; Filters
           </p>
           <p className="leading-relaxed">
             <span className="text-ink dark:text-parchment font-medium">
               Classes:{" "}
             </span>
-            {config.classes.length === 0
-              ? "All classes"
-              : `${config.classMode === "exclude" ? "Excluding " : ""}${config.classes.join(", ")}`}
+            {summarizeWeights(DND_CLASSES, config.classWeights, "classes")}
           </p>
           <p className="leading-relaxed">
             <span className="text-ink dark:text-parchment font-medium">
               Schools:{" "}
             </span>
-            {config.schools.length === 0
-              ? "All schools"
-              : `${config.schoolMode === "exclude" ? "Excluding " : ""}${config.schools.join(", ")}`}
+            {summarizeWeights(MAGIC_SCHOOLS, config.schoolWeights, "schools")}
           </p>
           <p className="leading-relaxed">
             <span className="text-ink dark:text-parchment font-medium">

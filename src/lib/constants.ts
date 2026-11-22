@@ -44,6 +44,31 @@ export const MAGIC_SCHOOLS: string[] = [
   "Transmutation",
 ];
 
+export interface OddsOption {
+  value: number;
+  label: string;
+}
+
+export const ODDS_OPTIONS: OddsOption[] = [
+  { value: 0, label: "Off" },
+  { value: 0.25, label: "0.25×" },
+  { value: 0.5, label: "0.5×" },
+  { value: 1, label: "1×" },
+  { value: 2, label: "2×" },
+  { value: 3, label: "3×" },
+];
+
+export function createUniformWeights(
+  keys: string[],
+  value: number
+): Record<string, number> {
+  const weights: Record<string, number> = {};
+  for (const key of keys) {
+    weights[key] = value;
+  }
+  return weights;
+}
+
 export const RULE_PRESETS: Record<
   Exclude<RulePresetId, "custom">,
   { label: string; description: string; counts: Record<string, number> }
@@ -107,11 +132,10 @@ export const DEFAULT_CONFIG: RandomizerConfig = {
   casterLevel: 5,
   maxSpellLevel: casterLevelToMaxSpellLevel(5),
   levelCounts: { ...RULE_PRESETS.standard_121.counts },
-  classes: ["Sorcerer"],
-  classMode: "include",
+  classWeights: createUniformWeights(DND_CLASSES, 1),
+  multiClassRule: "lowest",
   includeOptionalClasses: true,
-  schools: [],
-  schoolMode: "exclude",
+  schoolWeights: createUniformWeights(MAGIC_SCHOOLS, 1),
   excludeWeaponComponents: true,
   excludeCostlyMaterials: false,
   excludeConcentration: false,

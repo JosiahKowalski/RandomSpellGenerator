@@ -14,14 +14,14 @@
     },
     "GrimoireSave": {
       "title": "GrimoireSave",
-      "description": "Compact spell randomizer state storing known spells, current rolled spells, and custom per-level randomizer rules",
+      "description": "Compact spell randomizer state storing known spells, current rolled spells, and custom per-level randomizer rules with weighted class and school odds",
       "type": "object",
       "properties": {
         "ownerId": {
           "type": "string",
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$",
-          "description": "Firebase Auth UID of the grimoire owner"
+          "description": "Firebase Auth UID of the owner"
         },
         "knownSpellNames": {
           "type": "array",
@@ -29,16 +29,16 @@
         },
         "rolledSpellNames": {
           "type": "array",
-          "description": "List of currently active randomized bonus spell names (max 100)"
+          "description": "List of currently active randomized spell names (max 100)"
         },
         "config": {
           "type": "object",
-          "description": "Randomizer rules including casterLevel, maxSpellLevel, levelCounts, class/school filters, and component exclusions"
+          "description": "Randomizer rules including casterLevel, maxSpellLevel, levelCounts, classWeights, multiClassRule, schoolWeights, and component exclusions"
         },
         "createdAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Server timestamp when the grimoire record was created"
+          "description": "Server timestamp when the record was created"
         },
         "updatedAt": {
           "type": "string",

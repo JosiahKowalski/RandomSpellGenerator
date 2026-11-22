@@ -1,11 +1,18 @@
 import React, { useMemo, useRef } from "react";
 import { RotateCcw, Upload } from "lucide-react";
-import { RandomizerConfig, RulePresetId, Spell } from "../types/spell";
+import {
+  MultiClassRule,
+  RandomizerConfig,
+  RulePresetId,
+  Spell,
+} from "../types/spell";
 import {
   casterLevelToMaxSpellLevel,
+  createUniformWeights,
   DEFAULT_CONFIG,
   DND_CLASSES,
   MAGIC_SCHOOLS,
+  ODDS_OPTIONS,
   RULE_PRESETS,
   SPELL_LEVELS,
 } from "../lib/constants";
@@ -26,6 +33,28 @@ interface RulesViewProps {
   onResetCatalog: () => void;
 }
 
+const MULTI_CLASS_OPTIONS: Array<{
+  id: MultiClassRule;
+  label: string;
+  hint: string;
+}> = [
+  {
+    id: "lowest",
+    label: "Lowest odds",
+    hint: "If a spell is on Sorcerer (0.25×) and Wizard (1×), it uses 0.25×. Best when lowering or turning off a class.",
+  },
+  {
+    id: "average",
+    label: "Average odds",
+    hint: "If a spell is on Sorcerer (0.25×) and Wizard (1×), it blends them to 0.63×.",
+  },
+  {
+    id: "highest",
+    label: "Highest odds",
+    hint: "If a spell is on Sorcerer (1×) and Wizard (Off), it uses 1×. Best when picking only specific classes.",
+  },
+];
+
 export const RulesView: React.FC<RulesViewProps> = ({
   config,
   catalog,
@@ -43,7 +72,6 @@ export const RulesView: React.FC<RulesViewProps> = ({
     [knownSpellNames]
   );
 
-  // Count remaining eligible spells per level (after excluding already-known spells)
   const availableByLevel = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const lvl of SPELL_LEVELS) counts[lvl.key] = 0;
@@ -103,18 +131,52 @@ export const RulesView: React.FC<RulesViewProps> = ({
     });
   };
 
-  const toggleClass = (cls: string) => {
-    const next = config.classes.includes(cls)
-      ? config.classes.filter((c) => c !== cls)
-      : [...config.classes, cls];
-    onUpdateConfig({ ...config, classes: next });
+  const setClassWeight = (cls: string, weight: number) => {
+    onUpdateConfig({
+      ...config,
+      classWeights: { ...config.classWeights, [cls]: weight },
+    });
   };
 
-  const toggleSchool = (school: string) => {
-    const next = config.schools.includes(school)
-      ? config.schools.filter((s) => s !== school)
-      : [...config.schools, school];
-    onUpdateConfig({ ...config, schools: next });
+  const setOnlyClass = (cls: string) => {
+    const next = createUniformWeights(DND_CLASSES, 0);
+    next[cls] = 1;
+    onUpdateConfig({
+      ...config,
+      classWeights: next,
+      multiClassRule: "highest",
+    });
+  };
+
+  const resetAllClasses = (weight: number) => {
+    onUpdateConfig({
+      ...config,
+      classWeights: createUniformWeights(DND_CLASSES, weight),
+      multiClassRule: weight > 0 ? "lowest" : "highest",
+    });
+  };
+
+  const setSchoolWeight = (school: string, weight: number) => {
+    onUpdateConfig({
+      ...config,
+      schoolWeights: { ...config.schoolWeights, [school]: weight },
+    });
+  };
+
+  const setOnlySchool = (school: string) => {
+    const next = createUniformWeights(MAGIC_SCHOOLS, 0);
+    next[school] = 1;
+    onUpdateConfig({
+      ...config,
+      schoolWeights: next,
+    });
+  };
+
+  const resetAllSchools = (weight: number) => {
+    onUpdateConfig({
+      ...config,
+      schoolWeights: createUniformWeights(MAGIC_SCHOOLS, weight),
+    });
   };
 
   const toggleSourceExclusion = (source: string) => {
@@ -125,6 +187,25 @@ export const RulesView: React.FC<RulesViewProps> = ({
   };
 
   const totalPlanned = getTotalPlannedRolls(config);
+  const activeMultiClassMeta =
+    MULTI_CLASS_OPTIONS.find((opt) => opt.id === config.multiClassRule) ||
+    MULTI_CLASS_OPTIONS[0];
+
+  const getOddsButtonClass = (isActive: boolean, value: number) => {
+    if (!isActive) {
+      return "text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment hover:bg-paper/70 dark:hover:bg-obsidian/60";
+    }
+    if (value === 0) {
+      return "bg-sienna text-white dark:bg-brass dark:text-obsidian shadow-xs";
+    }
+    if (value > 1) {
+      return "bg-lapis text-white dark:bg-lapis-dark dark:text-obsidian shadow-xs";
+    }
+    if (value < 1) {
+      return "bg-stone-700 text-paper dark:bg-stone-300 dark:text-obsidian shadow-xs";
+    }
+    return "bg-paper dark:bg-obsidian text-ink dark:text-parchment shadow-xs";
+  };
 
   return (
     <div className="max-w-5xl space-y-12">
@@ -160,7 +241,6 @@ export const RulesView: React.FC<RulesViewProps> = ({
           </p>
         </div>
 
-        {/* Caster Level & Max Spell Level Controls */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-5 rounded-lg border border-limestone dark:border-charcoal-border bg-linen/60 dark:bg-soot">
           <div className="space-y-2">
             <label
@@ -210,7 +290,6 @@ export const RulesView: React.FC<RulesViewProps> = ({
           </div>
         </div>
 
-        {/* Presets Bar */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2">
             {(
@@ -254,7 +333,6 @@ export const RulesView: React.FC<RulesViewProps> = ({
           </span>
         </div>
 
-        {/* Per-Level Distribution Table */}
         <div className="border border-limestone dark:border-charcoal-border rounded-lg overflow-hidden">
           <div className="grid grid-cols-12 px-4 py-2.5 bg-linen dark:bg-soot border-b border-limestone dark:border-charcoal-border text-xs font-medium text-ink-muted dark:text-ash">
             <div className="col-span-4 sm:col-span-3">Spell Level</div>
@@ -358,150 +436,226 @@ export const RulesView: React.FC<RulesViewProps> = ({
         </div>
       </section>
 
-      {/* Section 2: Class & School Filters */}
-      <section className="space-y-6 pt-4 border-t border-limestone dark:border-charcoal-border">
+      {/* Section 2: Class & School Odds */}
+      <section className="space-y-8 pt-4 border-t border-limestone dark:border-charcoal-border">
         <div className="space-y-1">
           <h2 className="font-serif text-2xl font-semibold text-ink dark:text-parchment">
-            Class &amp; School Filters
+            Class &amp; School Odds
           </h2>
           <p className="text-sm text-ink-muted dark:text-ash max-w-2xl leading-relaxed">
-            Restrict your randomizer pool to specific classes or schools, or switch to Exclude mode to ban unwanted lists. Leave all unselected to allow everything.
+            Set relative roll odds for each class and school. Use <strong className="font-medium text-ink dark:text-parchment">Off</strong> to exclude completely, <strong className="font-medium text-ink dark:text-parchment">0.25× / 0.5×</strong> to make spells rarer while keeping them possible, or <strong className="font-medium text-ink dark:text-parchment">2× / 3×</strong> to favor them.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          {/* Class Filter */}
-          <div className="space-y-4">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-ink dark:text-parchment">
-                Classes
-              </h3>
-              <div className="flex items-center gap-1 p-0.5 rounded-md bg-linen dark:bg-soot border border-limestone dark:border-charcoal-border">
-                {(["include", "exclude"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => onUpdateConfig({ ...config, classMode: mode })}
-                    className={`px-2.5 py-1 rounded text-xs font-medium capitalize transition-colors ${
-                      config.classMode === mode
-                        ? "bg-paper dark:bg-obsidian text-ink dark:text-parchment shadow-xs"
-                        : "text-ink-muted dark:text-ash"
-                    }`}
-                  >
-                    {mode}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              {DND_CLASSES.map((cls) => {
-                const selected = config.classes.includes(cls);
-                return (
-                  <button
-                    key={cls}
-                    type="button"
-                    onClick={() => toggleClass(cls)}
-                    className={`h-9 px-3.5 rounded-md text-xs font-medium border transition-colors whitespace-nowrap ${
-                      selected
-                        ? config.classMode === "exclude"
-                          ? "bg-sienna text-white border-sienna dark:bg-brass dark:text-obsidian dark:border-brass"
-                          : "bg-lapis text-white border-lapis dark:bg-lapis-dark dark:text-obsidian dark:border-lapis-dark"
-                        : "bg-paper dark:bg-soot text-ink dark:text-parchment border-limestone dark:border-charcoal-border hover:bg-linen dark:hover:bg-obsidian"
-                    }`}
-                  >
-                    {cls}
-                  </button>
-                );
-              })}
-              {config.classes.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => onUpdateConfig({ ...config, classes: [] })}
-                  className="h-9 px-2.5 text-xs text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment"
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-
-            <label className="flex items-start gap-3 pt-1 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={config.includeOptionalClasses}
-                onChange={(e) =>
-                  onUpdateConfig({
-                    ...config,
-                    includeOptionalClasses: e.target.checked,
-                  })
-                }
-                className="mt-0.5 h-4 w-4 rounded border-limestone dark:border-charcoal-border accent-lapis dark:accent-lapis-dark"
-              />
-              <span className="text-xs text-ink-muted dark:text-ash leading-relaxed">
-                <strong className="font-medium text-ink dark:text-parchment">
-                  Include optional &amp; expansion class lists
-                </strong>{" "}
-                (captures XGE/TCE spells like <em>Absorb Elements</em> listed in the Optional/Variant column)
+        {/* Class Odds */}
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h3 className="text-base font-semibold text-ink dark:text-parchment">
+              Classes
+            </h3>
+            <div className="flex items-center gap-3 text-xs">
+              <button
+                type="button"
+                onClick={() => resetAllClasses(1)}
+                className="text-lapis dark:text-lapis-dark hover:underline whitespace-nowrap"
+              >
+                All Normal (1×)
+              </button>
+              <span aria-hidden="true" className="text-limestone dark:text-charcoal-border">
+                /
               </span>
-            </label>
+              <button
+                type="button"
+                onClick={() => resetAllClasses(0)}
+                className="text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment whitespace-nowrap"
+              >
+                All Off
+              </button>
+            </div>
           </div>
 
-          {/* School Filter */}
-          <div className="space-y-4">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-ink dark:text-parchment">
-                Schools of Magic
-              </h3>
-              <div className="flex items-center gap-1 p-0.5 rounded-md bg-linen dark:bg-soot border border-limestone dark:border-charcoal-border">
-                {(["include", "exclude"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() =>
-                      onUpdateConfig({ ...config, schoolMode: mode })
-                    }
-                    className={`px-2.5 py-1 rounded text-xs font-medium capitalize transition-colors ${
-                      config.schoolMode === mode
-                        ? "bg-paper dark:bg-obsidian text-ink dark:text-parchment shadow-xs"
-                        : "text-ink-muted dark:text-ash"
-                    }`}
-                  >
-                    {mode}
-                  </button>
-                ))}
+          {/* Multi-class overlap selector */}
+          <div className="p-4 rounded-lg border border-limestone dark:border-charcoal-border bg-linen/60 dark:bg-soot space-y-2.5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <span className="text-xs font-medium text-ink dark:text-parchment">
+                When a spell belongs to multiple classes
+              </span>
+              <div className="inline-flex items-center gap-1 p-0.5 rounded-md bg-paper dark:bg-obsidian border border-limestone dark:border-charcoal-border self-start sm:self-auto">
+                {MULTI_CLASS_OPTIONS.map((opt) => {
+                  const active = config.multiClassRule === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() =>
+                        onUpdateConfig({ ...config, multiClassRule: opt.id })
+                      }
+                      className={`px-2.5 py-1 rounded text-xs font-medium whitespace-nowrap transition-colors ${
+                        active
+                          ? "bg-lapis text-white dark:bg-lapis-dark dark:text-obsidian"
+                          : "text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
+            <p className="text-xs text-ink-muted dark:text-ash leading-relaxed">
+              {activeMultiClassMeta.hint}
+            </p>
+          </div>
 
-            <div className="flex flex-wrap gap-2">
-              {MAGIC_SCHOOLS.map((school) => {
-                const selected = config.schools.includes(school);
-                return (
-                  <button
-                    key={school}
-                    type="button"
-                    onClick={() => toggleSchool(school)}
-                    className={`h-9 px-3.5 rounded-md text-xs font-medium border transition-colors whitespace-nowrap ${
-                      selected
-                        ? config.schoolMode === "exclude"
-                          ? "bg-sienna text-white border-sienna dark:bg-brass dark:text-obsidian dark:border-brass"
-                          : "bg-lapis text-white border-lapis dark:bg-lapis-dark dark:text-obsidian dark:border-lapis-dark"
-                        : "bg-paper dark:bg-soot text-ink dark:text-parchment border-limestone dark:border-charcoal-border hover:bg-linen dark:hover:bg-obsidian"
-                    }`}
-                  >
-                    {school}
-                  </button>
-                );
-              })}
-              {config.schools.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => onUpdateConfig({ ...config, schools: [] })}
-                  className="h-9 px-2.5 text-xs text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment"
+          {/* Class Odds Rows */}
+          <div className="border border-limestone dark:border-charcoal-border rounded-lg divide-y divide-limestone dark:divide-charcoal-border overflow-hidden">
+            {DND_CLASSES.map((cls) => {
+              const currentWeight = Number(config.classWeights[cls] ?? 1);
+              return (
+                <div
+                  key={cls}
+                  className="px-4 py-2.5 bg-paper dark:bg-obsidian flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
                 >
-                  Clear
-                </button>
-              )}
+                  <div className="flex items-center justify-between sm:justify-start gap-3">
+                    <span
+                      className={`text-sm font-medium ${
+                        currentWeight === 0
+                          ? "text-ink-muted dark:text-ash line-through"
+                          : "text-ink dark:text-parchment"
+                      }`}
+                    >
+                      {cls}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setOnlyClass(cls)}
+                      className="text-xs text-ink-muted dark:text-ash hover:text-lapis dark:hover:text-lapis-dark transition-colors"
+                      title={`Set only ${cls} to 1× and all other classes to Off`}
+                    >
+                      Only
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1 p-1 rounded-md bg-linen dark:bg-soot border border-limestone dark:border-charcoal-border overflow-x-auto">
+                    {ODDS_OPTIONS.map((opt) => {
+                      const active = currentWeight === opt.value;
+                      return (
+                        <button
+                          key={opt.label}
+                          type="button"
+                          onClick={() => setClassWeight(cls, opt.value)}
+                          className={`flex-1 sm:flex-none min-w-[48px] h-8 px-2 rounded text-xs font-mono tabular-nums font-medium whitespace-nowrap transition-colors ${getOddsButtonClass(
+                            active,
+                            opt.value
+                          )}`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <label className="flex items-start gap-3 pt-1 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={config.includeOptionalClasses}
+              onChange={(e) =>
+                onUpdateConfig({
+                  ...config,
+                  includeOptionalClasses: e.target.checked,
+                })
+              }
+              className="mt-0.5 h-4 w-4 rounded border-limestone dark:border-charcoal-border accent-lapis dark:accent-lapis-dark"
+            />
+            <span className="text-xs text-ink-muted dark:text-ash leading-relaxed">
+              <strong className="font-medium text-ink dark:text-parchment">
+                Include optional &amp; expansion class lists
+              </strong>{" "}
+              (captures XGE/TCE spells like <em>Absorb Elements</em> listed in the Optional/Variant column)
+            </span>
+          </label>
+        </div>
+
+        {/* School Odds */}
+        <div className="space-y-4 pt-2">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h3 className="text-base font-semibold text-ink dark:text-parchment">
+              Schools of Magic
+            </h3>
+            <div className="flex items-center gap-3 text-xs">
+              <button
+                type="button"
+                onClick={() => resetAllSchools(1)}
+                className="text-lapis dark:text-lapis-dark hover:underline whitespace-nowrap"
+              >
+                All Normal (1×)
+              </button>
+              <span aria-hidden="true" className="text-limestone dark:text-charcoal-border">
+                /
+              </span>
+              <button
+                type="button"
+                onClick={() => resetAllSchools(0)}
+                className="text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment whitespace-nowrap"
+              >
+                All Off
+              </button>
             </div>
+          </div>
+
+          <div className="border border-limestone dark:border-charcoal-border rounded-lg divide-y divide-limestone dark:divide-charcoal-border overflow-hidden">
+            {MAGIC_SCHOOLS.map((school) => {
+              const currentWeight = Number(config.schoolWeights[school] ?? 1);
+              return (
+                <div
+                  key={school}
+                  className="px-4 py-2.5 bg-paper dark:bg-obsidian flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                >
+                  <div className="flex items-center justify-between sm:justify-start gap-3">
+                    <span
+                      className={`text-sm font-medium ${
+                        currentWeight === 0
+                          ? "text-ink-muted dark:text-ash line-through"
+                          : "text-ink dark:text-parchment"
+                      }`}
+                    >
+                      {school}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setOnlySchool(school)}
+                      className="text-xs text-ink-muted dark:text-ash hover:text-lapis dark:hover:text-lapis-dark transition-colors"
+                      title={`Set only ${school} to 1× and all other schools to Off`}
+                    >
+                      Only
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1 p-1 rounded-md bg-linen dark:bg-soot border border-limestone dark:border-charcoal-border overflow-x-auto">
+                    {ODDS_OPTIONS.map((opt) => {
+                      const active = currentWeight === opt.value;
+                      return (
+                        <button
+                          key={opt.label}
+                          type="button"
+                          onClick={() => setSchoolWeight(school, opt.value)}
+                          className={`flex-1 sm:flex-none min-w-[48px] h-8 px-2 rounded text-xs font-mono tabular-nums font-medium whitespace-nowrap transition-colors ${getOddsButtonClass(
+                            active,
+                            opt.value
+                          )}`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </section>

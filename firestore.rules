@@ -34,11 +34,10 @@ service cloud.firestore {
           'casterLevel',
           'maxSpellLevel',
           'levelCounts',
-          'classes',
-          'classMode',
+          'classWeights',
+          'multiClassRule',
           'includeOptionalClasses',
-          'schools',
-          'schoolMode',
+          'schoolWeights',
           'excludeWeaponComponents',
           'excludeCostlyMaterials',
           'excludeConcentration',
@@ -50,11 +49,10 @@ service cloud.firestore {
           'casterLevel',
           'maxSpellLevel',
           'levelCounts',
-          'classes',
-          'classMode',
+          'classWeights',
+          'multiClassRule',
           'includeOptionalClasses',
-          'schools',
-          'schoolMode',
+          'schoolWeights',
           'excludeWeaponComponents',
           'excludeCostlyMaterials',
           'excludeConcentration',
@@ -65,11 +63,10 @@ service cloud.firestore {
         && cfg.casterLevel is int && cfg.casterLevel >= 1 && cfg.casterLevel <= 20
         && cfg.maxSpellLevel is int && cfg.maxSpellLevel >= 0 && cfg.maxSpellLevel <= 9
         && cfg.levelCounts is map && cfg.levelCounts.size() <= 10
-        && isValidStringList(cfg.classes, 30)
-        && cfg.classMode is string && cfg.classMode in ['include', 'exclude']
+        && cfg.classWeights is map && cfg.classWeights.size() <= 20
+        && cfg.multiClassRule is string && cfg.multiClassRule in ['lowest', 'average', 'highest']
         && cfg.includeOptionalClasses is bool
-        && isValidStringList(cfg.schools, 20)
-        && cfg.schoolMode is string && cfg.schoolMode in ['include', 'exclude']
+        && cfg.schoolWeights is map && cfg.schoolWeights.size() <= 15
         && cfg.excludeWeaponComponents is bool
         && cfg.excludeCostlyMaterials is bool
         && cfg.excludeConcentration is bool

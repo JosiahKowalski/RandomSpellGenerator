@@ -22,7 +22,7 @@ export interface Spell {
   hasCostlyMaterial: boolean;
 }
 
-export type FilterMode = "include" | "exclude";
+export type MultiClassRule = "lowest" | "average" | "highest";
 
 export type RulePresetId =
   | "standard_121"
@@ -34,11 +34,10 @@ export interface RandomizerConfig {
   casterLevel: number;
   maxSpellLevel: number;
   levelCounts: Record<string, number>;
-  classes: string[];
-  classMode: FilterMode;
+  classWeights: Record<string, number>;
+  multiClassRule: MultiClassRule;
   includeOptionalClasses: boolean;
-  schools: string[];
-  schoolMode: FilterMode;
+  schoolWeights: Record<string, number>;
   excludeWeaponComponents: boolean;
   excludeCostlyMaterials: boolean;
   excludeConcentration: boolean;

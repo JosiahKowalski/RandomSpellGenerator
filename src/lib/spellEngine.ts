@@ -2,6 +2,7 @@ import Papa from "papaparse";
 import {
   GrimoireSnapshot,
   LevelShortfall,
+  MultiClassRule,
   RandomizerConfig,
   RollResult,
   RulePresetId,
@@ -9,7 +10,10 @@ import {
 } from "../types/spell";
 import {
   casterLevelToMaxSpellLevel,
+  createUniformWeights,
   DEFAULT_CONFIG,
+  DND_CLASSES,
+  MAGIC_SCHOOLS,
   RULE_PRESETS,
   SPELL_LEVELS,
 } from "./constants";
@@ -87,74 +91,137 @@ export function parseSpellsCSV(csvText: string): Spell[] {
   return spells;
 }
 
+export function getSpellMatchedClasses(
+  spell: Spell,
+  includeOptionalClasses: boolean
+): string[] {
+  const combined = includeOptionalClasses
+    ? `${spell.classes} ${spell.optionalVariantClasses}`.toLowerCase()
+    : spell.classes.toLowerCase();
+
+  return DND_CLASSES.filter((cls) => combined.includes(cls.toLowerCase()));
+}
+
+export function getSpellClassWeight(
+  spell: Spell,
+  config: RandomizerConfig
+): number {
+  const matchedClasses = getSpellMatchedClasses(
+    spell,
+    config.includeOptionalClasses
+  );
+
+  if (matchedClasses.length === 0) {
+    // Spells with no recognized base class (e.g., custom/subclass-only) are allowed
+    // only when at least one class is enabled and no classes are turned off globally.
+    const allEnabled = DND_CLASSES.every(
+      (cls) => (config.classWeights[cls] ?? 1) > 0
+    );
+    return allEnabled ? 1 : 0;
+  }
+
+  const weights = matchedClasses.map((cls) =>
+    Math.max(0, Number(config.classWeights[cls] ?? 1))
+  );
+
+  if (config.multiClassRule === "highest") {
+    return Math.max(...weights);
+  }
+
+  if (config.multiClassRule === "average") {
+    const sum = weights.reduce((acc, w) => acc + w, 0);
+    return sum / weights.length;
+  }
+
+  // "lowest": strict rule — if any of the spell's classes is lowered or Off (0),
+  // that lower weight governs the spell.
+  return Math.min(...weights);
+}
+
+export function getSpellSchoolWeight(
+  spell: Spell,
+  config: RandomizerConfig
+): number {
+  const matchedSchool = MAGIC_SCHOOLS.find(
+    (sch) => sch.toLowerCase() === spell.schoolBase.toLowerCase()
+  );
+  if (!matchedSchool) return 1;
+  return Math.max(0, Number(config.schoolWeights[matchedSchool] ?? 1));
+}
+
+export function getSpellWeight(
+  spell: Spell,
+  config: RandomizerConfig
+): number {
+  // Hard exclusions: sourcebook, weapon components, costly materials, traits
+  if (
+    config.excludedSources.length > 0 &&
+    config.excludedSources.some(
+      (src) => src.toLowerCase() === spell.source.toLowerCase()
+    )
+  ) {
+    return 0;
+  }
+
+  if (config.excludeWeaponComponents && spell.hasWeaponComponent) return 0;
+  if (config.excludeCostlyMaterials && spell.hasCostlyMaterial) return 0;
+  if (config.excludeConcentration && spell.isConcentration) return 0;
+  if (config.excludeRituals && spell.isRitual) return 0;
+
+  const classWeight = getSpellClassWeight(spell, config);
+  if (classWeight <= 0) return 0;
+
+  const schoolWeight = getSpellSchoolWeight(spell, config);
+  if (schoolWeight <= 0) return 0;
+
+  return classWeight * schoolWeight;
+}
+
+export function formatWeightLabel(weight: number): string {
+  if (weight <= 0) return "Off";
+  const rounded = Math.round(weight * 100) / 100;
+  return `${rounded}×`;
+}
+
 export function filterSpellPool(
   catalog: Spell[],
   config: RandomizerConfig
 ): Spell[] {
-  const lowerClasses = config.classes.map((c) => c.toLowerCase());
-  const lowerSchools = config.schools.map((s) => s.toLowerCase());
-  const excludedSourcesSet = new Set(
-    config.excludedSources.map((src) => src.toLowerCase())
-  );
-
-  return catalog.filter((spell) => {
-    // Sourcebook filter
-    if (
-      excludedSourcesSet.size > 0 &&
-      excludedSourcesSet.has(spell.source.toLowerCase())
-    ) {
-      return false;
-    }
-
-    // Class affinity filter (optionally includes Optional/Variant Classes column)
-    if (lowerClasses.length > 0) {
-      const combinedClasses = config.includeOptionalClasses
-        ? `${spell.classes} ${spell.optionalVariantClasses}`.toLowerCase()
-        : spell.classes.toLowerCase();
-
-      const matchedClass = lowerClasses.some((cls) =>
-        combinedClasses.includes(cls)
-      );
-
-      if (config.classMode === "exclude" && matchedClass) return false;
-      if (config.classMode === "include" && !matchedClass) return false;
-    }
-
-    // School of magic filter
-    if (lowerSchools.length > 0) {
-      const spellSchool = spell.schoolBase.toLowerCase();
-      const matchedSchool = lowerSchools.some((sch) =>
-        spellSchool.includes(sch)
-      );
-      if (config.schoolMode === "exclude" && matchedSchool) return false;
-      if (config.schoolMode === "include" && !matchedSchool) return false;
-    }
-
-    // Component & trait exclusions
-    if (config.excludeWeaponComponents && spell.hasWeaponComponent) {
-      return false;
-    }
-    if (config.excludeCostlyMaterials && spell.hasCostlyMaterial) {
-      return false;
-    }
-    if (config.excludeConcentration && spell.isConcentration) {
-      return false;
-    }
-    if (config.excludeRituals && spell.isRitual) {
-      return false;
-    }
-
-    return true;
-  });
+  return catalog.filter((spell) => getSpellWeight(spell, config) > 0);
 }
 
-function fisherYatesShuffle<T>(items: T[]): T[] {
-  const arr = [...items];
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
+function weightedSampleWithoutReplacement<T>(
+  items: T[],
+  getWeight: (item: T) => number,
+  count: number
+): T[] {
+  const remaining = items
+    .map((item) => ({ item, weight: Math.max(0, getWeight(item)) }))
+    .filter((entry) => entry.weight > 0);
+
+  const picked: T[] = [];
+  const draws = Math.min(count, remaining.length);
+
+  for (let d = 0; d < draws; d++) {
+    const totalWeight = remaining.reduce((sum, entry) => sum + entry.weight, 0);
+    if (totalWeight <= 0) break;
+
+    let cursor = Math.random() * totalWeight;
+    let chosenIdx = remaining.length - 1;
+
+    for (let i = 0; i < remaining.length; i++) {
+      cursor -= remaining[i].weight;
+      if (cursor <= 0) {
+        chosenIdx = i;
+        break;
+      }
+    }
+
+    picked.push(remaining[chosenIdx].item);
+    remaining.splice(chosenIdx, 1);
   }
-  return arr;
+
+  return picked;
 }
 
 export function rollRandomSpells(
@@ -190,7 +257,12 @@ export function rollRandomSpells(
       });
     }
 
-    const picked = fisherYatesShuffle(candidates).slice(0, requested);
+    const picked = weightedSampleWithoutReplacement(
+      candidates,
+      (spell) => getSpellWeight(spell, config),
+      requested
+    );
+
     for (const spell of picked) {
       rolledNames.push(spell.name);
       chosenNamesLower.add(spell.name.toLowerCase());
@@ -236,7 +308,16 @@ export function rerollSingleSpell(
     return { nextRolledNames: currentRolledNames, replacedSpell: null };
   }
 
-  const [replacement] = fisherYatesShuffle(candidates);
+  const [replacement] = weightedSampleWithoutReplacement(
+    candidates,
+    (spell) => getSpellWeight(spell, config),
+    1
+  );
+
+  if (!replacement) {
+    return { nextRolledNames: currentRolledNames, replacedSpell: null };
+  }
+
   const nextRolledNames = [...currentRolledNames];
   nextRolledNames[targetIndex] = replacement.name;
   return { nextRolledNames, replacedSpell: replacement };
@@ -268,44 +349,116 @@ export function detectPresetId(
   return "custom";
 }
 
-export function sanitizeConfig(raw: Partial<RandomizerConfig> | undefined): RandomizerConfig {
+function clampWeight(val: unknown, fallback = 1): number {
+  if (typeof val !== "number" || !Number.isFinite(val)) return fallback;
+  const clamped = Math.max(0, Math.min(10, val));
+  return Math.round(clamped * 100) / 100;
+}
+
+export function sanitizeConfig(raw: unknown): RandomizerConfig {
+  const obj = (raw && typeof raw === "object" ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+
   const casterLevel =
-    typeof raw?.casterLevel === "number" && Number.isFinite(raw.casterLevel)
-      ? Math.max(1, Math.min(20, Math.round(raw.casterLevel)))
+    typeof obj.casterLevel === "number" && Number.isFinite(obj.casterLevel)
+      ? Math.max(1, Math.min(20, Math.round(obj.casterLevel)))
       : DEFAULT_CONFIG.casterLevel;
 
   const maxSpellLevel =
-    typeof raw?.maxSpellLevel === "number" && Number.isFinite(raw.maxSpellLevel)
-      ? Math.max(0, Math.min(9, Math.round(raw.maxSpellLevel)))
+    typeof obj.maxSpellLevel === "number" && Number.isFinite(obj.maxSpellLevel)
+      ? Math.max(0, Math.min(9, Math.round(obj.maxSpellLevel)))
       : casterLevelToMaxSpellLevel(casterLevel);
 
+  const rawCounts =
+    obj.levelCounts && typeof obj.levelCounts === "object"
+      ? (obj.levelCounts as Record<string, unknown>)
+      : {};
   const levelCounts: Record<string, number> = {};
   for (const lvl of SPELL_LEVELS) {
-    const val = raw?.levelCounts?.[lvl.key];
+    const val = rawCounts[lvl.key];
     levelCounts[lvl.key] =
       typeof val === "number" && Number.isFinite(val)
         ? Math.max(0, Math.min(20, Math.round(val)))
         : DEFAULT_CONFIG.levelCounts[lvl.key];
   }
 
-  const classes = Array.isArray(raw?.classes)
-    ? raw.classes
-        .filter((x): x is string => typeof x === "string")
-        .map((x) => x.trim().slice(0, 40))
-        .filter(Boolean)
-        .slice(0, 30)
-    : [...DEFAULT_CONFIG.classes];
+  // Class weights (with automatic migration from legacy classes + classMode)
+  let classWeights: Record<string, number>;
+  let inferredMultiClassRule: MultiClassRule = DEFAULT_CONFIG.multiClassRule;
 
-  const schools = Array.isArray(raw?.schools)
-    ? raw.schools
-        .filter((x): x is string => typeof x === "string")
-        .map((x) => x.trim().slice(0, 40))
-        .filter(Boolean)
-        .slice(0, 20)
-    : [...DEFAULT_CONFIG.schools];
+  if (obj.classWeights && typeof obj.classWeights === "object") {
+    const rawMap = obj.classWeights as Record<string, unknown>;
+    classWeights = {};
+    for (const cls of DND_CLASSES) {
+      classWeights[cls] = clampWeight(rawMap[cls], 1);
+    }
+  } else if (Array.isArray(obj.classes)) {
+    const legacyClasses = obj.classes
+      .filter((x): x is string => typeof x === "string")
+      .map((x) => x.toLowerCase());
+    const legacyExclude = obj.classMode === "exclude";
 
-  const excludedSources = Array.isArray(raw?.excludedSources)
-    ? raw.excludedSources
+    if (legacyClasses.length === 0) {
+      classWeights = createUniformWeights(DND_CLASSES, 1);
+    } else if (legacyExclude) {
+      classWeights = {};
+      for (const cls of DND_CLASSES) {
+        classWeights[cls] = legacyClasses.includes(cls.toLowerCase()) ? 0 : 1;
+      }
+      inferredMultiClassRule = "lowest";
+    } else {
+      classWeights = {};
+      for (const cls of DND_CLASSES) {
+        classWeights[cls] = legacyClasses.includes(cls.toLowerCase()) ? 1 : 0;
+      }
+      inferredMultiClassRule = "highest";
+    }
+  } else {
+    classWeights = { ...DEFAULT_CONFIG.classWeights };
+  }
+
+  const multiClassRule: MultiClassRule =
+    obj.multiClassRule === "highest" ||
+    obj.multiClassRule === "average" ||
+    obj.multiClassRule === "lowest"
+      ? obj.multiClassRule
+      : inferredMultiClassRule;
+
+  // School weights (with automatic migration from legacy schools + schoolMode)
+  let schoolWeights: Record<string, number>;
+  if (obj.schoolWeights && typeof obj.schoolWeights === "object") {
+    const rawMap = obj.schoolWeights as Record<string, unknown>;
+    schoolWeights = {};
+    for (const sch of MAGIC_SCHOOLS) {
+      schoolWeights[sch] = clampWeight(rawMap[sch], 1);
+    }
+  } else if (Array.isArray(obj.schools)) {
+    const legacySchools = obj.schools
+      .filter((x): x is string => typeof x === "string")
+      .map((x) => x.toLowerCase());
+    const legacyInclude = obj.schoolMode === "include";
+
+    if (legacySchools.length === 0) {
+      schoolWeights = createUniformWeights(MAGIC_SCHOOLS, 1);
+    } else if (legacyInclude) {
+      schoolWeights = {};
+      for (const sch of MAGIC_SCHOOLS) {
+        schoolWeights[sch] = legacySchools.includes(sch.toLowerCase()) ? 1 : 0;
+      }
+    } else {
+      schoolWeights = {};
+      for (const sch of MAGIC_SCHOOLS) {
+        schoolWeights[sch] = legacySchools.includes(sch.toLowerCase()) ? 0 : 1;
+      }
+    }
+  } else {
+    schoolWeights = { ...DEFAULT_CONFIG.schoolWeights };
+  }
+
+  const excludedSources = Array.isArray(obj.excludedSources)
+    ? obj.excludedSources
         .filter((x): x is string => typeof x === "string")
         .map((x) => x.trim().slice(0, 40))
         .filter(Boolean)
@@ -316,21 +469,20 @@ export function sanitizeConfig(raw: Partial<RandomizerConfig> | undefined): Rand
     casterLevel,
     maxSpellLevel,
     levelCounts,
-    classes,
-    classMode: raw?.classMode === "exclude" ? "exclude" : "include",
+    classWeights,
+    multiClassRule,
     includeOptionalClasses:
-      typeof raw?.includeOptionalClasses === "boolean"
-        ? raw.includeOptionalClasses
+      typeof obj.includeOptionalClasses === "boolean"
+        ? obj.includeOptionalClasses
         : DEFAULT_CONFIG.includeOptionalClasses,
-    schools,
-    schoolMode: raw?.schoolMode === "include" ? "include" : "exclude",
+    schoolWeights,
     excludeWeaponComponents:
-      typeof raw?.excludeWeaponComponents === "boolean"
-        ? raw.excludeWeaponComponents
+      typeof obj.excludeWeaponComponents === "boolean"
+        ? obj.excludeWeaponComponents
         : DEFAULT_CONFIG.excludeWeaponComponents,
-    excludeCostlyMaterials: Boolean(raw?.excludeCostlyMaterials),
-    excludeConcentration: Boolean(raw?.excludeConcentration),
-    excludeRituals: Boolean(raw?.excludeRituals),
+    excludeCostlyMaterials: Boolean(obj.excludeCostlyMaterials),
+    excludeConcentration: Boolean(obj.excludeConcentration),
+    excludeRituals: Boolean(obj.excludeRituals),
     excludedSources,
     activePreset: detectPresetId(levelCounts),
   };
@@ -357,7 +509,6 @@ export function validateImportPayload(raw: unknown): GrimoireSnapshot | null {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
 
-  // Support both new GrimoireSnapshot format and legacy character JSON exports
   const isNewFormat =
     Array.isArray(obj.knownSpellNames) ||
     Array.isArray(obj.rolledSpellNames) ||
@@ -367,7 +518,7 @@ export function validateImportPayload(raw: unknown): GrimoireSnapshot | null {
     return {
       knownSpellNames: sanitizeStringList(obj.knownSpellNames, 400),
       rolledSpellNames: sanitizeStringList(obj.rolledSpellNames, 100),
-      config: sanitizeConfig(obj.config as Partial<RandomizerConfig> | undefined),
+      config: sanitizeConfig(obj.config),
       updatedAt:
         typeof obj.updatedAt === "string"
           ? obj.updatedAt
@@ -385,7 +536,11 @@ export function validateImportPayload(raw: unknown): GrimoireSnapshot | null {
       ? obj.activeSpells
           .filter(
             (s): s is { name: string; isPermanent?: boolean } =>
-              Boolean(s && typeof s === "object" && typeof (s as { name?: unknown }).name === "string")
+              Boolean(
+                s &&
+                  typeof s === "object" &&
+                  typeof (s as { name?: unknown }).name === "string"
+              )
           )
           .filter((s) => !s.isPermanent)
           .map((s) => s.name)
@@ -398,11 +553,11 @@ export function validateImportPayload(raw: unknown): GrimoireSnapshot | null {
         casterLevel: legacyLevel,
         maxSpellLevel: casterLevelToMaxSpellLevel(legacyLevel),
         classes: Array.isArray(legacySettings.classes)
-          ? (legacySettings.classes as string[])
-          : DEFAULT_CONFIG.classes,
+          ? legacySettings.classes
+          : [],
         classMode: legacySettings.excludeClasses ? "exclude" : "include",
         schools: Array.isArray(legacySettings.schools)
-          ? (legacySettings.schools as string[])
+          ? legacySettings.schools
           : [],
         schoolMode: legacySettings.excludeSchools ? "exclude" : "include",
         excludeWeaponComponents:
@@ -434,4 +589,46 @@ export function getUniqueSources(catalog: Spell[]): string[] {
   return Array.from(counts.entries())
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([src]) => src);
+}
+
+export function summarizeWeights(
+  keys: string[],
+  weights: Record<string, number>,
+  nounPlural: string
+): string {
+  const off: string[] = [];
+  const reduced: string[] = [];
+  const boosted: string[] = [];
+  const normal: string[] = [];
+
+  for (const key of keys) {
+    const w = Number(weights[key] ?? 1);
+    if (w <= 0) off.push(key);
+    else if (w < 1) reduced.push(`${key} (${formatWeightLabel(w)})`);
+    else if (w > 1) boosted.push(`${key} (${formatWeightLabel(w)})`);
+    else normal.push(key);
+  }
+
+  if (off.length === keys.length) return `None (all ${nounPlural} off)`;
+  if (off.length === 0 && reduced.length === 0 && boosted.length === 0) {
+    return `All ${nounPlural} (1×)`;
+  }
+
+  // If only 1-3 items are enabled and the rest are Off, show the enabled ones concisely
+  const enabledCount = keys.length - off.length;
+  if (enabledCount > 0 && enabledCount <= 3 && off.length >= 4) {
+    const activeLabels = keys
+      .filter((k) => Number(weights[k] ?? 1) > 0)
+      .map((k) => {
+        const w = Number(weights[k] ?? 1);
+        return w === 1 ? k : `${k} (${formatWeightLabel(w)})`;
+      });
+    return `Only ${activeLabels.join(", ")}`;
+  }
+
+  const parts: string[] = [];
+  if (boosted.length > 0) parts.push(`Boosted: ${boosted.join(", ")}`);
+  if (reduced.length > 0) parts.push(`Lowered: ${reduced.join(", ")}`);
+  if (off.length > 0) parts.push(`Off: ${off.join(", ")}`);
+  return parts.join(" · ");
 }

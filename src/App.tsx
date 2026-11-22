@@ -660,7 +660,7 @@ export default function App() {
               <SpellPoolView
                 eligiblePool={eligiblePool}
                 knownSpellNames={knownSpellNames}
-                maxSpellLevel={config.maxSpellLevel}
+                config={config}
                 onOpenSpell={setSelectedSpell}
                 onToggleKnown={handleToggleKnown}
               />
