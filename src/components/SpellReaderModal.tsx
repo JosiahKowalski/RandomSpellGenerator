@@ -4,7 +4,8 @@ import { Dices, ExternalLink, Lock, Plus, RefreshCw, Unlock, X } from "lucide-re
 import { Spell, SpellSlotState } from "../types/spell";
 import { SPELL_LEVELS } from "../lib/constants";
 import { getEffectiveMaxSlots, getSpell5eToolsUrl } from "../lib/spellEngine";
-import { parseSpellRolls } from "../lib/spellRollParser";
+import { isPlayerRollableSpell } from "../lib/aiSpellRollCache";
+import { useAiAvailability } from "../lib/useAiAvailability";
 
 interface SpellReaderModalProps {
   spell: Spell | null;
@@ -20,8 +21,9 @@ interface SpellReaderModalProps {
   onReroll?: (spellName: string) => void;
   onQuickStoreInRing?: (spell: Spell) => void;
   onCastSpell?: (spell: Spell, slotLevel: number | null) => void;
+  onCastAndRoll?: (spell: Spell, slotLevel: number | null) => void;
   onSetConcentration?: (spellName: string | null) => void;
-  onRollSpellInTray?: (spell: Spell) => void;
+  onRollSpellInTray?: (spell: Spell, castLevel?: number | null) => void;
 }
 
 const NUMERIC_COLUMN_HEADER =
@@ -166,6 +168,7 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
   onReroll,
   onQuickStoreInRing,
   onCastSpell,
+  onCastAndRoll,
   onSetConcentration,
   onRollSpellInTray,
 }) => {
@@ -201,17 +204,24 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
 
   useEffect(() => {
     if (!spell) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, [spell, onClose]);
 
-  const hasTrayRolls = useMemo(
-    () => (spell ? parseSpellRolls(spell).hasAnyRoll : false),
-    [spell]
-  );
+  const aiAvailable = useAiAvailability();
+
+  const canRollPlayerDice = useMemo(() => {
+    if (!spell) return false;
+    return isPlayerRollableSpell(spell, aiAvailable === true);
+  }, [spell, aiAvailable]);
 
   if (!spell || typeof document === "undefined") return null;
 
@@ -362,9 +372,9 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
         </div>
 
         {/* Tabletop Cast & Concentration Strip */}
-        {((onCastSpell || onSetConcentration) &&
-          (spell.levelIndex > 0 || spell.isConcentration) ||
-          (onRollSpellInTray && hasTrayRolls)) && (
+        {(((onCastSpell || onSetConcentration) &&
+          (spell.levelIndex > 0 || spell.isConcentration)) ||
+          ((onRollSpellInTray || onCastAndRoll) && canRollPlayerDice)) && (
             <div className="px-6 py-3 border-t border-limestone dark:border-charcoal-border bg-paper dark:bg-soot flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2">
                 {spell.levelIndex > 0 && onCastSpell && (
@@ -399,6 +409,18 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
                             Cast ({SPELL_LEVELS[chosenSlotOption.level]?.shortLabel})
                           </span>
                         </button>
+                        {onCastAndRoll && canRollPlayerDice && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onCastAndRoll(spell, chosenSlotOption.level)
+                            }
+                            className="h-9 px-3 inline-flex items-center gap-1.5 rounded-md border border-sienna/55 dark:border-brass/55 bg-linen/70 dark:bg-obsidian text-xs font-medium text-sienna dark:text-brass hover:bg-sienna hover:text-white hover:border-sienna dark:hover:bg-brass dark:hover:text-obsidian dark:hover:border-brass transition-colors whitespace-nowrap"
+                          >
+                            <Dices className="w-3.5 h-3.5" />
+                            <span>Cast &amp; Roll</span>
+                          </button>
+                        )}
                       </>
                     ) : (
                       <span className="text-xs text-ink-muted dark:text-ash">
@@ -416,6 +438,17 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
                       </button>
                     )}
                   </>
+                )}
+
+                {spell.levelIndex === 0 && canRollPlayerDice && onCastAndRoll && (
+                  <button
+                    type="button"
+                    onClick={() => onCastAndRoll(spell, null)}
+                    className="h-9 px-3.5 inline-flex items-center gap-1.5 rounded-md bg-lapis text-white hover:bg-blue-800 dark:bg-lapis-dark dark:text-obsidian dark:hover:bg-blue-300 text-xs font-medium transition-colors whitespace-nowrap"
+                  >
+                    <Dices className="w-3.5 h-3.5" />
+                    <span>Cast &amp; Roll</span>
+                  </button>
                 )}
 
                 {spell.isConcentration && onSetConcentration && (
@@ -440,16 +473,24 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
                   </button>
                 )}
 
-                {onRollSpellInTray && hasTrayRolls && (
-                  <button
-                    type="button"
-                    onClick={() => onRollSpellInTray(spell)}
-                    className="h-9 px-3 inline-flex items-center gap-1.5 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-xs font-medium text-ink dark:text-parchment hover:border-sienna dark:hover:border-brass hover:text-sienna dark:hover:text-brass transition-colors whitespace-nowrap"
-                  >
-                    <Dices className="w-3.5 h-3.5" />
-                    <span>Roll in Tray</span>
-                  </button>
-                )}
+                {onRollSpellInTray &&
+                  canRollPlayerDice &&
+                  spell.levelIndex > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onRollSpellInTray(
+                          spell,
+                          chosenSlotOption?.level ?? spell.levelIndex
+                        )
+                      }
+                      title="Open in Dice Tray without spending a spell slot"
+                      className="h-9 px-2.5 inline-flex items-center gap-1.5 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-xs font-medium text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment hover:bg-linen dark:hover:bg-soot transition-colors whitespace-nowrap"
+                    >
+                      <Dices className="w-3.5 h-3.5" />
+                      <span>{chosenSlotOption ? "Tray Only" : "Roll in Tray"}</span>
+                    </button>
+                  )}
               </div>
 
               {willReplaceConcentration && (
@@ -461,12 +502,12 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
           )}
 
         {/* Footer Actions */}
-        <div className="px-6 py-4 border-t border-limestone dark:border-charcoal-border bg-linen/70 dark:bg-obsidian/60 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
+        <div className="px-6 py-3.5 border-t border-limestone dark:border-charcoal-border bg-linen/70 dark:bg-obsidian/60 flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => onToggleKnown(spell.name)}
-              className={`h-10 px-4 inline-flex items-center gap-2 rounded-md text-sm font-medium border transition-colors whitespace-nowrap ${
+              className={`h-9 px-3.5 inline-flex items-center gap-1.5 rounded-md text-xs font-medium border transition-colors whitespace-nowrap ${
                 isKnown
                   ? "border-sienna/40 dark:border-brass/40 text-sienna dark:text-brass bg-paper dark:bg-soot hover:bg-linen dark:hover:bg-obsidian"
                   : "border-limestone dark:border-charcoal-border text-ink dark:text-parchment bg-paper dark:bg-soot hover:bg-linen dark:hover:bg-obsidian"
@@ -474,12 +515,12 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
             >
               {isKnown ? (
                 <>
-                  <Unlock className="w-4 h-4" />
+                  <Unlock className="w-3.5 h-3.5" />
                   <span>Remove from Known</span>
                 </>
               ) : (
                 <>
-                  <Lock className="w-4 h-4" />
+                  <Lock className="w-3.5 h-3.5" />
                   <span>Lock as Known</span>
                 </>
               )}
@@ -489,9 +530,9 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
               <button
                 type="button"
                 onClick={() => onReroll(spell.name)}
-                className="h-10 px-4 inline-flex items-center gap-2 rounded-md text-sm font-medium border border-limestone dark:border-charcoal-border text-ink dark:text-parchment bg-paper dark:bg-soot hover:bg-linen dark:hover:bg-obsidian transition-colors whitespace-nowrap"
+                className="h-9 px-3.5 inline-flex items-center gap-1.5 rounded-md text-xs font-medium border border-limestone dark:border-charcoal-border text-ink dark:text-parchment bg-paper dark:bg-soot hover:bg-linen dark:hover:bg-obsidian transition-colors whitespace-nowrap"
               >
-                <RefreshCw className="w-4 h-4" />
+                <RefreshCw className="w-3.5 h-3.5" />
                 <span>Reroll</span>
               </button>
             )}
@@ -503,9 +544,9 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
                 <button
                   type="button"
                   onClick={() => onQuickStoreInRing(spell)}
-                  className="h-10 px-4 inline-flex items-center gap-2 rounded-md text-sm font-medium border border-limestone dark:border-charcoal-border text-ink dark:text-parchment bg-paper dark:bg-soot hover:bg-linen dark:hover:bg-obsidian transition-colors whitespace-nowrap"
+                  className="h-9 px-3.5 inline-flex items-center gap-1.5 rounded-md text-xs font-medium border border-limestone dark:border-charcoal-border text-ink dark:text-parchment bg-paper dark:bg-soot hover:bg-linen dark:hover:bg-obsidian transition-colors whitespace-nowrap"
                 >
-                  <Plus className="w-4 h-4" />
+                  <Plus className="w-3.5 h-3.5" />
                   <span>Store in Ring</span>
                 </button>
               )}
@@ -515,10 +556,10 @@ export const SpellReaderModal: React.FC<SpellReaderModalProps> = ({
             href={getSpell5eToolsUrl(spell)}
             target="_blank"
             rel="noopener noreferrer"
-            className="h-10 px-4 inline-flex items-center gap-2 rounded-md bg-lapis text-white hover:bg-blue-800 dark:bg-lapis-dark dark:text-obsidian dark:hover:bg-blue-300 text-sm font-medium transition-colors whitespace-nowrap"
+            className="h-9 px-3.5 inline-flex items-center gap-1.5 rounded-md border border-limestone dark:border-charcoal-border bg-paper dark:bg-soot text-xs font-medium text-ink dark:text-parchment hover:border-lapis hover:text-lapis dark:hover:border-lapis-dark dark:hover:text-lapis-dark transition-colors whitespace-nowrap"
           >
             <span>Open on 5e.tools</span>
-            <ExternalLink className="w-4 h-4" />
+            <ExternalLink className="w-3.5 h-3.5" />
           </a>
         </div>
       </div>

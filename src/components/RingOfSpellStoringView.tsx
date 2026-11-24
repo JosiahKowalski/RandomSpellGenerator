@@ -1,8 +1,10 @@
 import React, { useMemo, useState } from "react";
-import { Plus, Search, Trash2, X } from "lucide-react";
+import { Dices, Plus, Search, Trash2, X } from "lucide-react";
 import { Spell, StoredRingSpell } from "../types/spell";
 import { SPELL_LEVELS } from "../lib/constants";
 import { getRingUsedLevels, RING_MAX_LEVELS } from "../lib/spellEngine";
+import { isPlayerRollableSpell } from "../lib/aiSpellRollCache";
+import { useAiAvailability } from "../lib/useAiAvailability";
 
 interface RingOfSpellStoringViewProps {
   catalog: Spell[];
@@ -11,6 +13,7 @@ interface RingOfSpellStoringViewProps {
   ringSpells: StoredRingSpell[];
   onStoreSpell: (entry: Omit<StoredRingSpell, "id">) => void;
   onCastStoredSpell: (entryId: string) => void;
+  onCastAndRollStoredSpell: (entryId: string) => void;
   onClearRing: () => void;
   onOpenSpell: (spell: Spell) => void;
 }
@@ -22,9 +25,11 @@ export const RingOfSpellStoringView: React.FC<RingOfSpellStoringViewProps> = ({
   ringSpells,
   onStoreSpell,
   onCastStoredSpell,
+  onCastAndRollStoredSpell,
   onClearRing,
   onOpenSpell,
 }) => {
+  const aiAvailable = useAiAvailability();
   const usedLevels = getRingUsedLevels(ringSpells);
   const remainingLevels = Math.max(0, RING_MAX_LEVELS - usedLevels);
 
@@ -159,9 +164,9 @@ export const RingOfSpellStoringView: React.FC<RingOfSpellStoringViewProps> = ({
             <button
               type="button"
               onClick={onClearRing}
-              className="h-10 px-3.5 inline-flex items-center gap-2 rounded-md border border-limestone dark:border-charcoal-border text-sm text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment hover:bg-linen dark:hover:bg-soot transition-colors whitespace-nowrap self-start sm:self-auto"
+              className="h-9 px-3 inline-flex items-center gap-1.5 rounded-md border border-limestone dark:border-charcoal-border text-xs font-medium text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment hover:bg-linen dark:hover:bg-soot transition-colors whitespace-nowrap self-start sm:self-auto"
             >
-              <Trash2 className="w-4 h-4" />
+              <Trash2 className="w-3.5 h-3.5" />
               <span>Clear Ring</span>
             </button>
           )}
@@ -305,6 +310,20 @@ export const RingOfSpellStoringView: React.FC<RingOfSpellStoringViewProps> = ({
                       >
                         Cast
                       </button>
+                      {catalogSpell &&
+                        isPlayerRollableSpell(
+                          catalogSpell,
+                          aiAvailable === true
+                        ) && (
+                          <button
+                            type="button"
+                            onClick={() => onCastAndRollStoredSpell(entry.id)}
+                            className="h-9 px-3 inline-flex items-center gap-1.5 rounded-md border border-sienna/55 dark:border-brass/55 bg-linen/70 dark:bg-soot text-xs font-medium text-sienna dark:text-brass hover:bg-sienna hover:text-white hover:border-sienna dark:hover:bg-brass dark:hover:text-obsidian dark:hover:border-brass whitespace-nowrap transition-colors"
+                          >
+                            <Dices className="w-3.5 h-3.5" />
+                            <span>Cast &amp; Roll</span>
+                          </button>
+                        )}
                     </div>
                   </article>
                 );
@@ -314,7 +333,7 @@ export const RingOfSpellStoringView: React.FC<RingOfSpellStoringViewProps> = ({
         </section>
 
         {/* Right Column: Store a Spell Panel */}
-        <aside className="lg:col-span-5 border border-limestone dark:border-charcoal-border rounded-lg bg-linen/60 dark:bg-soot p-6 space-y-5">
+        <aside className="lg:col-span-5 lg:sticky lg:top-24 border border-limestone dark:border-charcoal-border rounded-lg bg-linen/60 dark:bg-soot p-6 space-y-5">
           <div className="flex items-center justify-between gap-2 pb-3 border-b border-limestone dark:border-charcoal-border">
             <h2 className="font-serif text-lg font-semibold text-ink dark:text-parchment">
               Store a Spell

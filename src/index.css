@@ -43,6 +43,13 @@
     text-wrap: balance;
   }
 
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  select:not(:disabled),
+  label[for] {
+    cursor: pointer;
+  }
+
   /* Subtle archival scrollbar */
   ::-webkit-scrollbar {
     width: 7px;
@@ -56,6 +63,15 @@
   ::-webkit-scrollbar-thumb {
     @apply bg-limestone dark:bg-charcoal-border rounded-full hover:bg-stone-400 dark:hover:bg-stone-600;
   }
+}
+
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
 }
 
 /* Hide default number input spinners */
@@ -112,6 +128,29 @@ input[type="number"] {
   }
 }
 
+@keyframes cast-confirm {
+  0% {
+    transform: scale(0.95);
+  }
+  55% {
+    transform: scale(1.03);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes toast-in {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .animate-cast-sheen {
   animation: cast-sheen 540ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
@@ -122,6 +161,14 @@ input[type="number"] {
 
 .animate-cast-check-pop {
   animation: cast-check-pop 240ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-cast-confirm {
+  animation: cast-confirm 220ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-toast-in {
+  animation: toast-in 180ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {

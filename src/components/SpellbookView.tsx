@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Check,
+  Dices,
   History,
   Lock,
   Plus,
@@ -25,6 +26,8 @@ import {
 } from "../types/spell";
 import { SPELL_LEVELS } from "../lib/constants";
 import { getEffectiveMaxSlots, getTotalPlannedRolls } from "../lib/spellEngine";
+import { isPlayerRollableSpell } from "../lib/aiSpellRollCache";
+import { useAiAvailability } from "../lib/useAiAvailability";
 import { SpellSlotsPanel } from "./SpellSlotsPanel";
 
 interface SpellbookViewProps {
@@ -48,6 +51,7 @@ interface SpellbookViewProps {
   onOpenRules: () => void;
   onOpenMetamagic: () => void;
   onCastSpell: (spell: Spell, slotLevel: number | null) => void;
+  onCastAndRoll: (spell: Spell, slotLevel: number | null) => void;
   onExpendSlot: (level: number) => void;
   onRecoverSlot: (level: number) => void;
   onSetCustomMaxSlot: (level: number, nextMax: number) => void;
@@ -101,6 +105,7 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
   onOpenRules,
   onOpenMetamagic,
   onCastSpell,
+  onCastAndRoll,
   onExpendSlot,
   onRecoverSlot,
   onSetCustomMaxSlot,
@@ -112,6 +117,7 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
   onRestoreRollHistory,
   onClearRollHistory,
 }) => {
+  const aiAvailable = useAiAvailability();
   const [filterTab, setFilterTab] = useState<SpellFilterTab>("all");
   const [activeSearch, setActiveSearch] = useState("");
   const [isAddKnownOpen, setIsAddKnownOpen] = useState(false);
@@ -216,6 +222,18 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
     () => new Set(knownSpells.map((s) => s.name.toLowerCase())),
     [knownSpells]
   );
+
+  // Memoize which active spells require player attacks or dice rolls
+  const playerRollableById = useMemo(() => {
+    const map = new Map<string, boolean>();
+    const aiEnabled = aiAvailable === true;
+    for (const s of [...knownSpells, ...rolledSpells]) {
+      if (!map.has(s.id)) {
+        map.set(s.id, isPlayerRollableSpell(s, aiEnabled));
+      }
+    }
+    return map;
+  }, [knownSpells, rolledSpells, aiAvailable]);
 
   // Quick-add search across the entire catalog
   const addKnownResults = useMemo(() => {
@@ -904,34 +922,101 @@ export const SpellbookView: React.FC<SpellbookViewProps> = ({
                                   Ritual
                                 </button>
                               )}
-                              <button
-                                type="button"
-                                disabled={!canQuickCast}
-                                onClick={() => {
-                                  if (!canQuickCast) return;
-                                  triggerCardCast(spell, quickCastSlotLevel);
-                                }}
-                                title={castButtonTitle}
-                                aria-label={castButtonTitle}
-                                className={`h-8 px-2.5 inline-flex items-center gap-1.5 rounded-md border text-xs font-medium transition-all duration-150 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lapis dark:focus-visible:ring-lapis-dark ${
-                                  isJustCast
-                                    ? spell.isConcentration
-                                      ? "bg-sienna text-white border-sienna dark:bg-brass dark:text-obsidian dark:border-brass"
-                                      : "bg-lapis text-white border-lapis dark:bg-lapis-dark dark:text-obsidian dark:border-lapis-dark"
-                                    : !canQuickCast
-                                    ? "border-limestone/70 dark:border-charcoal-border/70 text-ink-muted/55 dark:text-ash/45 bg-transparent cursor-not-allowed"
-                                    : quickCastMode === "upcast"
-                                    ? "border-sienna/35 dark:border-brass/40 bg-paper dark:bg-obsidian text-sienna dark:text-brass hover:bg-sienna hover:text-white hover:border-sienna dark:hover:bg-brass dark:hover:text-obsidian dark:hover:border-brass active:scale-[0.95]"
-                                    : "border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-ink dark:text-parchment hover:border-lapis hover:text-lapis dark:hover:border-lapis-dark dark:hover:text-lapis-dark active:scale-[0.95]"
-                                }`}
-                              >
-                                {isJustCast ? (
-                                  <Check className="w-3.5 h-3.5 animate-cast-check-pop" />
-                                ) : (
-                                  <Wand2 className="w-3.5 h-3.5" />
-                                )}
-                                <span>{castButtonLabel}</span>
-                              </button>
+
+                              {canQuickCast &&
+                              quickCastMode !== "ritual" &&
+                              playerRollableById.get(spell.id) ? (
+                                <div
+                                  className={`inline-flex items-stretch rounded-md border overflow-hidden divide-x shrink-0 transition-colors ${
+                                    isJustCast
+                                      ? spell.isConcentration
+                                        ? "border-sienna dark:border-brass divide-white/25 dark:divide-obsidian/25"
+                                        : "border-lapis dark:border-lapis-dark divide-white/25 dark:divide-obsidian/25"
+                                      : quickCastMode === "upcast"
+                                      ? "border-sienna/45 dark:border-brass/45 divide-sienna/30 dark:divide-brass/30 bg-paper dark:bg-obsidian"
+                                      : "border-limestone dark:border-charcoal-border divide-limestone dark:divide-charcoal-border bg-paper dark:bg-obsidian"
+                                  }`}
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      triggerCardCast(spell, quickCastSlotLevel)
+                                    }
+                                    title={castButtonTitle}
+                                    aria-label={castButtonTitle}
+                                    className={`h-8 px-2.5 inline-flex items-center gap-1.5 text-xs font-medium transition-colors duration-150 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-lapis dark:focus-visible:ring-lapis-dark ${
+                                      isJustCast
+                                        ? spell.isConcentration
+                                          ? "bg-sienna text-white dark:bg-brass dark:text-obsidian"
+                                          : "bg-lapis text-white dark:bg-lapis-dark dark:text-obsidian"
+                                        : quickCastMode === "upcast"
+                                        ? "text-sienna dark:text-brass hover:bg-sienna hover:text-white dark:hover:bg-brass dark:hover:text-obsidian"
+                                        : "text-ink dark:text-parchment hover:bg-linen dark:hover:bg-soot hover:text-lapis dark:hover:text-lapis-dark"
+                                    }`}
+                                  >
+                                    {isJustCast ? (
+                                      <Check className="w-3.5 h-3.5 animate-cast-check-pop" />
+                                    ) : (
+                                      <Wand2 className="w-3.5 h-3.5" />
+                                    )}
+                                    <span>{castButtonLabel}</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      onCastAndRoll(spell, quickCastSlotLevel)
+                                    }
+                                    title={
+                                      quickCastMode === "upcast" &&
+                                      quickCastSlotLevel
+                                        ? `Upcast ${spell.name} (${SPELL_LEVELS[quickCastSlotLevel]?.shortLabel} slot) & open Dice Tray`
+                                        : `Cast ${spell.name} & open Dice Tray`
+                                    }
+                                    aria-label={`Cast ${spell.name} and roll in Dice Tray`}
+                                    className={`h-8 w-8 inline-flex items-center justify-center transition-colors duration-150 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sienna dark:focus-visible:ring-brass ${
+                                      isJustCast
+                                        ? spell.isConcentration
+                                          ? "bg-sienna text-white dark:bg-brass dark:text-obsidian"
+                                          : "bg-lapis text-white dark:bg-lapis-dark dark:text-obsidian"
+                                        : quickCastMode === "upcast"
+                                        ? "text-sienna dark:text-brass hover:bg-sienna hover:text-white dark:hover:bg-brass dark:hover:text-obsidian"
+                                        : "text-ink-muted dark:text-ash hover:bg-sienna/10 hover:text-sienna dark:hover:bg-brass/15 dark:hover:text-brass"
+                                    }`}
+                                  >
+                                    <Dices className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={!canQuickCast}
+                                  onClick={() => {
+                                    if (!canQuickCast) return;
+                                    triggerCardCast(spell, quickCastSlotLevel);
+                                  }}
+                                  title={castButtonTitle}
+                                  aria-label={castButtonTitle}
+                                  className={`h-8 px-2.5 inline-flex items-center gap-1.5 rounded-md border text-xs font-medium transition-all duration-150 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lapis dark:focus-visible:ring-lapis-dark ${
+                                    isJustCast
+                                      ? spell.isConcentration
+                                        ? "bg-sienna text-white border-sienna dark:bg-brass dark:text-obsidian dark:border-brass"
+                                        : "bg-lapis text-white border-lapis dark:bg-lapis-dark dark:text-obsidian dark:border-lapis-dark"
+                                      : !canQuickCast
+                                      ? "border-limestone/70 dark:border-charcoal-border/70 text-ink-muted/55 dark:text-ash/45 bg-transparent cursor-not-allowed"
+                                      : quickCastMode === "upcast"
+                                      ? "border-sienna/35 dark:border-brass/40 bg-paper dark:bg-obsidian text-sienna dark:text-brass hover:bg-sienna hover:text-white hover:border-sienna dark:hover:bg-brass dark:hover:text-obsidian dark:hover:border-brass active:scale-[0.95]"
+                                      : "border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian text-ink dark:text-parchment hover:border-lapis hover:text-lapis dark:hover:border-lapis-dark dark:hover:text-lapis-dark active:scale-[0.95]"
+                                  }`}
+                                >
+                                  {isJustCast ? (
+                                    <Check className="w-3.5 h-3.5 animate-cast-check-pop" />
+                                  ) : (
+                                    <Wand2 className="w-3.5 h-3.5" />
+                                  )}
+                                  <span>{castButtonLabel}</span>
+                                </button>
+                              )}
                             </div>
                           </div>
                         </article>

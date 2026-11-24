@@ -43,6 +43,52 @@ export interface ParsedSpellRollProfile {
   halfOnSave: boolean;
   rolls: SpellRollAction[];
   hasAnyRoll: boolean;
+  notes?: string;
+  source?: "regex" | "ai";
+}
+
+/**
+ * True only when the player rolls a spell attack or direct dice (damage, healing,
+ * bonus/penalty dice, or random tables). Excludes pure save-only and utility spells.
+ */
+export function hasPlayerRoll(profile: ParsedSpellRollProfile): boolean {
+  return Boolean(profile.attackType || profile.rolls.length > 0);
+}
+
+/**
+ * Returns true when a spell's regex parse looks incomplete or ambiguous
+ * (e.g. missed table dice, unlabeled Damage/Effect Roll buttons, or stat tables),
+ * so the UI can gently suggest the AI parser.
+ */
+export function shouldSuggestAiFallback(
+  spell: Spell,
+  profile: ParsedSpellRollProfile
+): boolean {
+  if (profile.source === "ai") return false;
+  const combinedText = `${spell.text || ""} ${spell.atHigherLevels || ""}`;
+  const mentionsDiceOrTable =
+    /\b(?:d4|d6|d8|d10|d12|d20|d100|roll a d\d+|dice|die)\b/i.test(
+      combinedText
+    ) || combinedText.includes("| --- |");
+
+  if (profile.rolls.length === 0 && mentionsDiceOrTable) {
+    return true;
+  }
+
+  const genericCount = profile.rolls.filter(
+    (r) => r.label === "Effect Roll" || r.label === "Damage"
+  ).length;
+  if (genericCount >= 2) return true;
+
+  if (
+    profile.rolls.length > 0 &&
+    profile.rolls.some((r) => r.label === "Effect Roll") &&
+    combinedText.includes("| --- |")
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 const VALID_SIDES = new Set<number>([4, 6, 8, 10, 12, 20, 100]);
@@ -382,6 +428,7 @@ export function parseSpellRolls(spell: Spell): ParsedSpellRollProfile {
     halfOnSave,
     rolls,
     hasAnyRoll: Boolean(attackType || saveAbility || rolls.length > 0),
+    source: "regex",
   };
 }
 
@@ -453,7 +500,9 @@ export function buildSpellRollFormula(
   const formula = `${diceStr}${modStr}`;
 
   const displayLabel = dartCount
-    ? `All ${dartCount} Darts (${action.damageType ?? "Force"})`
+    ? /\bdarts?\b/i.test(action.label)
+      ? `All ${dartCount} Darts (${action.damageType ?? "Force"})`
+      : `${action.label} (×${dartCount})`
     : action.label;
 
   return {

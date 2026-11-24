@@ -94,7 +94,9 @@ export const MetamagicView: React.FC<MetamagicViewProps> = ({
   const visibleMetamagics =
     filterTab === "known"
       ? METAMAGIC_OPTIONS.filter((opt) => knownSet.has(opt.id))
-      : METAMAGIC_OPTIONS;
+      : [...METAMAGIC_OPTIONS].sort(
+          (a, b) => Number(knownSet.has(b.id)) - Number(knownSet.has(a.id))
+        );
 
   const effectiveMaxSlots = getEffectiveMaxSlots(slotState, casterLevel);
   const activeSlotLevels = SPELL_LEVELS.slice(1)
@@ -135,19 +137,15 @@ export const MetamagicView: React.FC<MetamagicViewProps> = ({
   return (
     <div className="space-y-8">
       {/* Page Header */}
-      <header className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-limestone dark:border-charcoal-border pb-6">
-        <div className="space-y-1.5">
-          <h1 className="font-serif text-3xl sm:text-4xl font-semibold tracking-tight text-ink dark:text-parchment">
+      <header className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-limestone dark:border-charcoal-border pb-5">
+        <div>
+          <p className="text-xs font-mono tabular-nums text-ink-muted dark:text-ash">
+            {remainingPoints}/{maxPoints} sorcery points · {knownCount} known{" "}
+            {knownCount === 1 ? "option" : "options"}
+          </p>
+          <h1 className="font-serif text-3xl sm:text-4xl font-semibold tracking-tight text-ink dark:text-parchment mt-1">
             Metamagic &amp; Font of Magic
           </h1>
-          <p className="text-sm text-ink-muted dark:text-ash">
-            <span className="font-mono tabular-nums font-medium text-ink dark:text-parchment">
-              {remainingPoints}/{maxPoints}
-            </span>{" "}
-            sorcery points ·{" "}
-            <span className="font-mono tabular-nums">{knownCount}</span> known
-            metamagic {knownCount === 1 ? "option" : "options"}
-          </p>
         </div>
 
         <div className="flex items-center gap-2.5 shrink-0">
@@ -571,7 +569,7 @@ export const MetamagicView: React.FC<MetamagicViewProps> = ({
             {/* Section 1: Create Spell Slot (SP -> Slot) */}
             <div className="p-4 space-y-3 border-b border-limestone dark:border-charcoal-border">
               <div className="flex items-baseline justify-between gap-2">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-muted dark:text-ash">
+                <h3 className="text-xs font-semibold text-ink dark:text-parchment">
                   Create Spell Slot
                 </h3>
                 <span className="text-[11px] font-mono text-ink-muted dark:text-ash">
@@ -647,7 +645,7 @@ export const MetamagicView: React.FC<MetamagicViewProps> = ({
             {/* Section 2: Convert Slot to Points (Slot -> SP) */}
             <div className="p-4 space-y-3">
               <div className="flex items-baseline justify-between gap-2">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-muted dark:text-ash">
+                <h3 className="text-xs font-semibold text-ink dark:text-parchment">
                   Convert Slot to Points
                 </h3>
                 <span className="text-[11px] font-mono text-ink-muted dark:text-ash">

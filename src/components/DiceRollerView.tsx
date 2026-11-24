@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ChevronDown,
   Dices,
   RotateCcw,
+  SlidersHorizontal,
   Sparkles,
   Trash2,
   Volume2,
@@ -18,9 +20,15 @@ import {
   RollDieRequest,
   TrayInteractionEvent,
 } from "../lib/diceScene";
+import {
+  DiceTraySettings,
+  loadDiceSettings,
+  saveDiceSettings,
+} from "../lib/diceRandomness";
 import { diceAudio } from "../lib/diceAudio";
-import { Spell, SpellSlotState } from "../types/spell";
+import { DiceCastHandoff, Spell, SpellSlotState } from "../types/spell";
 import { SpellCastTrayPanel } from "./SpellCastTrayPanel";
+import { DiceSettingsModal } from "./DiceSettingsModal";
 
 interface DiceRollerViewProps {
   catalog: Spell[];
@@ -28,8 +36,8 @@ interface DiceRollerViewProps {
   rolledSpells: Spell[];
   casterLevel: number;
   slotState: SpellSlotState;
-  initialSpell: Spell | null;
-  onClearInitialSpell: () => void;
+  initialCastHandoff: DiceCastHandoff | null;
+  onClearInitialCastHandoff: () => void;
   onCastSpell: (spell: Spell, slotLevel: number | null) => void;
   onOpenSpell: (spell: Spell) => void;
 }
@@ -101,6 +109,49 @@ const BUILDER_DICE: Array<{ type: BuilderDieType; label: string; sides: number }
 const FINISH_LIST: DiceFinishId[] = ["lapis", "ivory", "obsidian", "sienna"];
 const MAX_PHYSICAL_DICE = 24;
 const MAX_HISTORY = 10;
+const DICE_PREFS_STORAGE_KEY = "arcane_ledger_dice_prefs_v1";
+const DICE_HISTORY_STORAGE_KEY = "arcane_ledger_dice_history_v1";
+
+function loadDicePrefs(): { finishId: DiceFinishId; muted: boolean } {
+  try {
+    const raw = localStorage.getItem(DICE_PREFS_STORAGE_KEY);
+    if (!raw) return { finishId: "lapis", muted: false };
+    const parsed = JSON.parse(raw);
+    const finishId: DiceFinishId = FINISH_LIST.includes(parsed.finishId)
+      ? parsed.finishId
+      : "lapis";
+    return {
+      finishId,
+      muted: Boolean(parsed.muted),
+    };
+  } catch {
+    return { finishId: "lapis", muted: false };
+  }
+}
+
+function loadDiceHistory(): ResolvedRollRecord[] {
+  try {
+    const raw = localStorage.getItem(DICE_HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (item): item is ResolvedRollRecord =>
+          Boolean(
+            item &&
+              typeof item.id === "string" &&
+              typeof item.total === "number" &&
+              Array.isArray(item.dice) &&
+              item.plan &&
+              Array.isArray(item.plan.requests)
+          )
+      )
+      .slice(0, MAX_HISTORY);
+  } catch {
+    return [];
+  }
+}
 
 const QUICK_INSTANT_ROLLS: Array<{ label: string; formula: string }> = [
   { label: "1d20", formula: "1d20" },
@@ -432,8 +483,8 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
   rolledSpells,
   casterLevel,
   slotState,
-  initialSpell,
-  onClearInitialSpell,
+  initialCastHandoff,
+  onClearInitialCastHandoff,
   onCastSpell,
   onOpenSpell,
 }) => {
@@ -443,14 +494,32 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
   const lastSpellPlanRef = useRef<ParsedRollPlan | null>(null);
 
   const [deckTab, setDeckTab] = useState<ControlDeckTab>(
-    initialSpell ? "spell" : "manual"
+    initialCastHandoff ? "spell" : "manual"
   );
   const [selectedSpell, setSelectedSpell] = useState<Spell | null>(
-    initialSpell
+    initialCastHandoff?.spell ?? null
+  );
+  const [handoffMeta, setHandoffMeta] = useState<{
+    castLevel: number | null;
+    alreadyCast: boolean;
+    seq: number;
+  } | null>(() =>
+    initialCastHandoff
+      ? {
+          castLevel: initialCastHandoff.castLevel,
+          alreadyCast: initialCastHandoff.alreadyCast,
+          seq: Date.now(),
+        }
+      : null
   );
 
-  const [finishId, setFinishId] = useState<DiceFinishId>("lapis");
-  const [muted, setMuted] = useState<boolean>(false);
+  const initialPrefs = useRef(loadDicePrefs()).current;
+  const [finishId, setFinishId] = useState<DiceFinishId>(initialPrefs.finishId);
+  const [muted, setMuted] = useState<boolean>(initialPrefs.muted);
+  const [diceSettings, setDiceSettings] = useState<DiceTraySettings>(() =>
+    loadDiceSettings()
+  );
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [hand, setHand] = useState<Record<BuilderDieType, number>>(() =>
     createEmptyHand()
   );
@@ -461,18 +530,85 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
 
   const [isRolling, setIsRolling] = useState<boolean>(false);
   const [isHoldingDie, setIsHoldingDie] = useState<boolean>(false);
+  const [isHeldConcealed, setIsHeldConcealed] = useState<boolean>(false);
+  const [hoveredTrayGroupId, setHoveredTrayGroupId] = useState<string | null>(
+    null
+  );
+  const [trayStatusNote, setTrayStatusNote] = useState<string | null>(null);
+  const statusTimerRef = useRef<number | null>(null);
   const [activeLabel, setActiveLabel] = useState<string>("");
   const [latestRoll, setLatestRoll] = useState<ResolvedRollRecord | null>(null);
-  const [history, setHistory] = useState<ResolvedRollRecord[]>([]);
+  const [history, setHistory] = useState<ResolvedRollRecord[]>(() =>
+    loadDiceHistory()
+  );
+  const [recentRollsOpen, setRecentRollsOpen] = useState<boolean>(false);
 
-  // If routed from Spell Reader Modal ("Roll in Tray"), switch cleanly to Cast Spell tab
+  // Sync audio mute and persist dice finish + mute preferences
   useEffect(() => {
-    if (initialSpell) {
-      setSelectedSpell(initialSpell);
-      setDeckTab("spell");
-      onClearInitialSpell();
+    diceAudio.setMuted(muted);
+    try {
+      localStorage.setItem(
+        DICE_PREFS_STORAGE_KEY,
+        JSON.stringify({ finishId, muted })
+      );
+    } catch {
+      // ignore storage quota errors
     }
-  }, [initialSpell, onClearInitialSpell]);
+  }, [finishId, muted]);
+
+  // Persist recent dice roll history across tab switches and page reloads
+  useEffect(() => {
+    try {
+      localStorage.setItem(DICE_HISTORY_STORAGE_KEY, JSON.stringify(history));
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [history]);
+
+  const handleUpdateDiceSettings = useCallback((next: DiceTraySettings) => {
+    setDiceSettings(next);
+    saveDiceSettings(next);
+    sceneRef.current?.setSettings(next);
+  }, []);
+
+  const flashTrayStatusNote = useCallback((msg: string) => {
+    if (statusTimerRef.current) {
+      window.clearTimeout(statusTimerRef.current);
+    }
+    setTrayStatusNote(msg);
+    statusTimerRef.current = window.setTimeout(() => {
+      setTrayStatusNote(null);
+      statusTimerRef.current = null;
+    }, 2200);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (statusTimerRef.current) {
+        window.clearTimeout(statusTimerRef.current);
+      }
+    };
+  }, []);
+
+  // If routed from Spellbook, Spell Reader Modal, or Ring ("Cast & Roll" / "Tray Only"),
+  // switch cleanly to Cast Spell tab with the exact cast slot level
+  useEffect(() => {
+    if (initialCastHandoff) {
+      setSelectedSpell(initialCastHandoff.spell);
+      setHandoffMeta({
+        castLevel: initialCastHandoff.castLevel,
+        alreadyCast: initialCastHandoff.alreadyCast,
+        seq: Date.now(),
+      });
+      setDeckTab("spell");
+      onClearInitialCastHandoff();
+    }
+  }, [initialCastHandoff, onClearInitialCastHandoff]);
+
+  const handleSelectSpellManual = useCallback((spell: Spell | null) => {
+    setHandoffMeta(null);
+    setSelectedSpell(spell);
+  }, []);
 
   const handleSettledRef = useRef<(results: LandedDieResult[]) => void>(() => {});
   handleSettledRef.current = (results: LandedDieResult[]) => {
@@ -486,6 +622,9 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
     if (record.nat20) {
       diceAudio.playNat20Chime();
     }
+    sceneRef.current?.setDroppedGroups(
+      record.dice.filter((d) => d.dropped).map((d) => d.groupId)
+    );
     setLatestRoll(record);
     setHistory((prev) => [record, ...prev].slice(0, MAX_HISTORY));
     setIsRolling(false);
@@ -509,7 +648,8 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
       },
       (ev) => {
         handleTrayInteractionRef.current(ev);
-      }
+      },
+      diceSettings
     );
     sceneRef.current = tray;
 
@@ -524,10 +664,16 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
     sceneRef.current?.setFinish(finishId);
   }, [finishId]);
 
+  useEffect(() => {
+    sceneRef.current?.setSettings(diceSettings);
+  }, [diceSettings]);
+
   const executePlan = useCallback(
     (plan: ParsedRollPlan, throwDir?: { x: number; z: number }) => {
       if (!sceneRef.current) return;
       setFormulaError(null);
+      setTrayStatusNote(null);
+      setHoveredTrayGroupId(null);
       activePlanRef.current = plan;
       if (plan.source === "spell") {
         lastSpellPlanRef.current = plan;
@@ -601,16 +747,13 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
     activePlanRef.current = null;
     setIsRolling(false);
     setIsHoldingDie(false);
+    setHoveredTrayGroupId(null);
     setLatestRoll(null);
     setActiveLabel("");
   };
 
   const handleToggleMute = () => {
-    setMuted((prev) => {
-      const next = !prev;
-      diceAudio.setMuted(next);
-      return next;
-    });
+    setMuted((prev) => !prev);
   };
 
   const adjustHandDie = (type: BuilderDieType, delta: number) => {
@@ -654,12 +797,22 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
   );
 
   handleTrayInteractionRef.current = (ev: TrayInteractionEvent) => {
-    if (ev.kind === "grab-die") {
+    if (ev.kind === "hover-die") {
+      setHoveredTrayGroupId(ev.groupId ?? null);
+    } else if (ev.kind === "grab-die") {
+      setTrayStatusNote(null);
+      setIsHeldConcealed(Boolean(ev.concealed));
       setIsHoldingDie(true);
     } else if (ev.kind === "toss-die") {
       setIsHoldingDie(false);
+      setIsHeldConcealed(false);
       setIsRolling(true);
+    } else if (ev.kind === "cancel-grab") {
+      setIsHoldingDie(false);
+      setIsHeldConcealed(false);
+      flashTrayStatusNote("Returned to tray · flick to toss");
     } else if (ev.kind === "reroll-die") {
+      setTrayStatusNote(null);
       setIsRolling(true);
     } else if (ev.kind === "toss-all") {
       handleTrayRoll(ev.throwDir);
@@ -669,6 +822,7 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code !== "Space") return;
+      if (settingsOpen || document.querySelector('[role="dialog"]')) return;
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (
         tag === "INPUT" ||
@@ -683,7 +837,7 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleTrayRoll]);
+  }, [handleTrayRoll, settingsOpen]);
 
   const handSummary =
     buildPlanFromHand(hand, modifier, advMode).plan?.label ?? "1d20";
@@ -710,100 +864,99 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
             aria-label="3D physical dice tray"
             className="rounded-lg border border-limestone dark:border-charcoal-border bg-[#181614] overflow-hidden shadow-sm"
           >
-            {/* Integrated Top Readout & Utility Bar — never overlaps dice on the felt */}
-            <div className="px-3.5 py-2.5 border-b border-white/10 bg-[#1B1816] flex flex-wrap items-center justify-between gap-3 text-[#FBF9F5]">
+            {/* Integrated Top Readout & Utility Bar — fixed single-row height so UI never shifts */}
+            <div className="h-12 px-3 sm:px-3.5 border-b border-white/10 bg-[#1B1816] flex items-center justify-between gap-2.5 flex-nowrap text-[#FBF9F5]">
               {/* Live Result Readout */}
-              <div className="min-w-0 flex items-baseline gap-2.5">
+              <div className="min-w-0 flex-1 flex items-baseline gap-2 overflow-hidden">
                 {isHoldingDie ? (
                   <>
-                    <span className="font-serif text-lg font-semibold leading-none text-amber-300">
+                    <span className="font-serif text-base font-semibold leading-none text-amber-300 whitespace-nowrap shrink-0">
                       Holding die
                     </span>
-                    <span className="text-xs text-stone-400 truncate">
-                      Flick to toss or release to drop
+                    <span className="text-xs text-stone-400 truncate min-w-0">
+                      {isHeldConcealed
+                        ? diceSettings.gentleDropMode === "put-back"
+                          ? "Numbers hidden · flick to toss, drop gently to put back"
+                          : "Numbers hidden · release or flick to roll"
+                        : "Flick to toss · drop gently to put back"}
                     </span>
                   </>
                 ) : isRolling ? (
                   <>
-                    <span className="text-[11px] font-mono uppercase tracking-wider text-stone-400">
+                    <span className="text-xs font-mono text-stone-400 whitespace-nowrap shrink-0">
                       Rolling
                     </span>
-                    <span className="font-serif text-base font-semibold leading-tight truncate">
+                    <span className="font-serif text-base font-semibold leading-none truncate min-w-0">
                       {activeLabel || trayReadyHint}
                     </span>
                   </>
                 ) : latestRoll ? (
                   <>
-                    <span className="font-serif text-2xl font-semibold tabular-nums leading-none">
+                    <span className="font-serif text-2xl font-semibold tabular-nums leading-none whitespace-nowrap shrink-0">
                       {latestRoll.total}
                     </span>
-                    {latestRoll.showHalf && (
-                      <span className="text-xs font-mono text-stone-300">
-                        Half: {Math.floor(latestRoll.total / 2)}
+                    {trayStatusNote ? (
+                      <span className="text-xs text-amber-300/90 truncate min-w-0">
+                        {trayStatusNote}
                       </span>
+                    ) : (
+                      <>
+                        {latestRoll.showHalf && (
+                          <span className="text-xs font-mono text-stone-300 whitespace-nowrap shrink-0">
+                            Half {Math.floor(latestRoll.total / 2)}
+                          </span>
+                        )}
+                        {latestRoll.nat20 && (
+                          <span className="text-xs font-semibold text-amber-400 whitespace-nowrap shrink-0">
+                            Nat 20
+                          </span>
+                        )}
+                        {latestRoll.nat1 && (
+                          <span className="text-xs font-semibold text-orange-400 whitespace-nowrap shrink-0">
+                            Nat 1
+                          </span>
+                        )}
+                        <span className="text-xs font-mono text-stone-400 truncate min-w-0">
+                          {latestRoll.label}
+                        </span>
+                      </>
                     )}
-                    {latestRoll.nat20 && (
-                      <span className="text-xs font-semibold text-amber-400">
-                        Nat 20
-                      </span>
-                    )}
-                    {latestRoll.nat1 && (
-                      <span className="text-xs font-semibold text-orange-400">
-                        Nat 1
-                      </span>
-                    )}
-                    <span className="text-xs font-mono text-stone-400 truncate">
-                      {latestRoll.label}
-                    </span>
                   </>
                 ) : (
                   <>
-                    <span className="font-serif text-base font-semibold leading-none">
+                    <span className="font-serif text-base font-semibold leading-none whitespace-nowrap shrink-0">
                       Dice Tray
                     </span>
-                    <span className="text-xs text-stone-400 truncate">
-                      Click or drag to toss {trayReadyHint}
+                    <span className="text-xs text-stone-400 truncate min-w-0">
+                      {trayStatusNote || trayReadyHint}
                     </span>
                   </>
                 )}
               </div>
 
-              {/* Finishes, Reroll All, Mute & Clear Controls */}
-              <div className="flex items-center gap-2 shrink-0">
-                <div className="flex items-center gap-1.5 pr-2 border-r border-white/12">
-                  {FINISH_LIST.map((id) => {
-                    const theme = DICE_FINISHES[id];
-                    const active = finishId === id;
-                    return (
-                      <button
-                        key={id}
-                        type="button"
-                        onClick={() => setFinishId(id)}
-                        aria-label={`Dice finish: ${theme.label}`}
-                        title={theme.label}
-                        className={`h-4 w-4 sm:h-4.5 sm:w-4.5 rounded-full border transition-transform ${
-                          active
-                            ? "border-amber-300 scale-110 ring-1 ring-amber-300"
-                            : "border-white/30 hover:scale-105"
-                        }`}
-                        style={{ backgroundColor: theme.swatchHex }}
-                      />
-                    );
-                  })}
-                </div>
+              {/* Reroll All, Settings, Mute & Clear Controls */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => latestRoll && executePlan(latestRoll.plan)}
+                  disabled={!latestRoll || isRolling}
+                  title="Reroll all dice (Space)"
+                  className="h-7 px-2 sm:px-2.5 inline-flex items-center gap-1.5 rounded border border-white/18 bg-white/8 text-xs font-medium text-[#FBF9F5] hover:bg-white/15 disabled:opacity-35 transition-colors whitespace-nowrap"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span className="sm:hidden">Reroll</span>
+                  <span className="hidden sm:inline">Reroll All</span>
+                </button>
 
-                {latestRoll && (
-                  <button
-                    type="button"
-                    onClick={() => executePlan(latestRoll.plan)}
-                    disabled={isRolling}
-                    title="Reroll all dice (Space)"
-                    className="h-7 px-2.5 inline-flex items-center gap-1.5 rounded border border-white/18 bg-white/8 text-xs font-medium text-[#FBF9F5] hover:bg-white/15 disabled:opacity-45 transition-colors whitespace-nowrap"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Reroll All</span>
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(true)}
+                  aria-label="Dice randomness and drop settings"
+                  title="Dice settings"
+                  className="h-7 w-7 inline-flex items-center justify-center rounded text-stone-300 hover:text-white hover:bg-white/10 transition-colors"
+                >
+                  <SlidersHorizontal className="w-4 h-4" />
+                </button>
 
                 <button
                   type="button"
@@ -838,16 +991,64 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
               className="w-full h-[310px] sm:h-[395px] lg:h-[420px] select-none touch-none"
             />
 
-            {/* Slim Gesture Guide Footer */}
-            <div className="px-3.5 py-2 border-t border-white/8 bg-[#151311] flex items-center justify-between gap-2 text-[11px] text-stone-400">
-              <span>
-                {hasDiceInTray
-                  ? "Click a die to reroll · Hold & drag to move or toss · Swipe empty felt to reroll all"
-                  : `Click or swipe felt to roll ${trayReadyHint}`}
-              </span>
-              <span className="hidden sm:inline font-mono text-stone-500 shrink-0">
-                Space · Reroll All
-              </span>
+            {/* Fixed Single-Row Footer: Mode Summary, Gesture Guide & Dice Finishes */}
+            <div className="h-9 px-3 sm:px-3.5 border-t border-white/8 bg-[#151311] flex items-center justify-between gap-3 flex-nowrap text-[11px] text-stone-400">
+              <div className="min-w-0 flex-1 flex items-center gap-2 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(true)}
+                  title="Change randomness engine or drop behavior"
+                  className="font-mono text-stone-300 hover:text-white transition-colors whitespace-nowrap shrink-0"
+                >
+                  {diceSettings.randomnessEngine === "hybrid"
+                    ? "Crypto Hybrid"
+                    : "Pure Physics"}
+                  {" · "}
+                  {diceSettings.gentleDropMode === "put-back"
+                    ? "Put Back"
+                    : "Concealed Drop"}
+                </button>
+                <span className="hidden md:inline text-stone-600" aria-hidden="true">
+                  /
+                </span>
+                <span className="hidden md:inline truncate min-w-0">
+                  {hasDiceInTray
+                    ? "Click die to reroll · Hold to drag · Swipe felt to roll"
+                    : `Click or swipe felt to roll ${trayReadyHint}`}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2.5 shrink-0">
+                <div
+                  className="flex items-center gap-1.5"
+                  role="group"
+                  aria-label="Dice finish"
+                >
+                  {FINISH_LIST.map((id) => {
+                    const theme = DICE_FINISHES[id];
+                    const active = finishId === id;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setFinishId(id)}
+                        aria-label={`Dice finish: ${theme.label}`}
+                        title={theme.label}
+                        className={`h-3.5 w-3.5 sm:h-4 sm:w-4 rounded-full border transition-transform ${
+                          active
+                            ? "border-amber-300 scale-110 ring-1 ring-amber-300"
+                            : "border-white/30 hover:scale-105"
+                        }`}
+                        style={{ backgroundColor: theme.swatchHex }}
+                      />
+                    );
+                  })}
+                </div>
+
+                <span className="hidden md:inline font-mono text-stone-500 pl-2.5 border-l border-white/10 whitespace-nowrap">
+                  Space · Reroll
+                </span>
+              </div>
             </div>
           </section>
 
@@ -856,56 +1057,65 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
             aria-label="Current roll breakdown"
             className="rounded-lg border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian p-4 space-y-3"
           >
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <div className="min-w-0">
-                <h2 className="font-serif text-base font-semibold text-ink dark:text-parchment">
-                  Roll Breakdown
-                </h2>
-                <p className="text-xs text-ink-muted dark:text-ash">
-                  {latestRoll
-                    ? "Click any die here or in the tray to reroll just that die."
-                    : "Roll dice or cast a spell to inspect individual dice here."}
-                </p>
-              </div>
-              {latestRoll && (
-                <button
-                  type="button"
-                  onClick={() => executePlan(latestRoll.plan)}
-                  disabled={isRolling}
-                  className="h-8 px-2.5 inline-flex items-center gap-1.5 rounded-md border border-limestone dark:border-charcoal-border text-xs font-medium text-ink dark:text-parchment hover:bg-linen dark:hover:bg-soot disabled:opacity-50 transition-colors whitespace-nowrap shrink-0"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Reroll All</span>
-                </button>
-              )}
+            <div className="min-w-0">
+              <h2 className="font-serif text-base font-semibold text-ink dark:text-parchment">
+                Roll Breakdown
+              </h2>
+              <p className="text-xs text-ink-muted dark:text-ash">
+                {latestRoll
+                  ? "Click any die here or in the tray to reroll just that die."
+                  : "Roll dice or cast a spell to inspect individual dice here."}
+              </p>
             </div>
 
             {latestRoll && (
               <>
                 <div className="flex flex-wrap gap-2">
-                  {latestRoll.dice.map((die) => (
-                    <button
-                      key={die.groupId}
-                      type="button"
-                      disabled={isRolling}
-                      onClick={() => handleRerollSingleDie(die.groupId)}
-                      title={`Click to reroll this ${die.die}`}
-                      className={`group rounded-md border px-2.5 py-1.5 text-left transition-colors disabled:opacity-50 ${
-                        die.dropped
-                          ? "border-limestone/60 dark:border-charcoal-border/60 bg-linen/30 dark:bg-soot/40 opacity-55"
-                          : die.isCritMax
-                          ? "border-lapis dark:border-lapis-dark bg-linen/70 dark:bg-soot"
-                          : die.isCritMin
-                          ? "border-sienna/60 dark:border-brass/60 bg-linen/50 dark:bg-soot"
-                          : "border-limestone dark:border-charcoal-border bg-linen/40 dark:bg-soot/70 hover:border-lapis dark:hover:border-lapis-dark"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2 text-[11px] font-mono text-ink-muted dark:text-ash">
-                        <span>
-                          {die.sign === -1 ? `−${die.die}` : die.die}
-                        </span>
-                        <RotateCcw className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity text-lapis dark:text-lapis-dark" />
-                      </div>
+                  {latestRoll.dice.map((die) => {
+                    const isTrayHovered = hoveredTrayGroupId === die.groupId;
+                    return (
+                      <button
+                        key={die.groupId}
+                        type="button"
+                        disabled={isRolling}
+                        onClick={() => handleRerollSingleDie(die.groupId)}
+                        onMouseEnter={() =>
+                          sceneRef.current?.setHighlightedGroup(die.groupId)
+                        }
+                        onMouseLeave={() =>
+                          sceneRef.current?.setHighlightedGroup(null)
+                        }
+                        onFocus={() =>
+                          sceneRef.current?.setHighlightedGroup(die.groupId)
+                        }
+                        onBlur={() =>
+                          sceneRef.current?.setHighlightedGroup(null)
+                        }
+                        title={`Click to reroll this ${die.die}`}
+                        className={`group rounded-md border px-2.5 py-1.5 text-left transition-colors disabled:opacity-50 ${
+                          isTrayHovered
+                            ? "border-lapis dark:border-lapis-dark ring-1 ring-lapis/50 dark:ring-lapis-dark/50 bg-linen/90 dark:bg-soot"
+                            : die.dropped
+                            ? "border-limestone/60 dark:border-charcoal-border/60 bg-linen/30 dark:bg-soot/40 opacity-55 hover:opacity-85"
+                            : die.isCritMax
+                            ? "border-lapis dark:border-lapis-dark bg-linen/70 dark:bg-soot"
+                            : die.isCritMin
+                            ? "border-sienna/60 dark:border-brass/60 bg-linen/50 dark:bg-soot"
+                            : "border-limestone dark:border-charcoal-border bg-linen/40 dark:bg-soot/70 hover:border-lapis dark:hover:border-lapis-dark"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 text-[11px] font-mono text-ink-muted dark:text-ash">
+                          <span>
+                            {die.sign === -1 ? `−${die.die}` : die.die}
+                          </span>
+                          <RotateCcw
+                            className={`w-3 h-3 transition-opacity text-lapis dark:text-lapis-dark ${
+                              isTrayHovered
+                                ? "opacity-100"
+                                : "opacity-0 group-hover:opacity-100"
+                            }`}
+                          />
+                        </div>
                       <div
                         className={`font-serif text-xl font-semibold tabular-nums leading-tight ${
                           die.dropped
@@ -919,13 +1129,14 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
                       >
                         {die.value}
                       </div>
-                      {die.detailLabel && (
-                        <div className="text-[10px] font-mono text-ink-muted dark:text-ash">
-                          {die.detailLabel}
-                        </div>
-                      )}
-                    </button>
-                  ))}
+                        {die.detailLabel && (
+                          <div className="text-[10px] font-mono text-ink-muted dark:text-ash">
+                            {die.detailLabel}
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
 
                 <div className="pt-2.5 border-t border-limestone/80 dark:border-charcoal-border/80 flex flex-wrap items-baseline justify-between gap-2 text-xs">
@@ -953,65 +1164,6 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
               </>
             )}
           </section>
-
-          {/* Compact Recent Rolls Log */}
-          {history.length > 0 && (
-            <section
-              aria-label="Recent dice rolls"
-              className="rounded-lg border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian p-4 space-y-2.5"
-            >
-              <div className="flex items-baseline justify-between gap-2">
-                <h2 className="font-serif text-base font-semibold text-ink dark:text-parchment">
-                  Recent Rolls
-                </h2>
-                <button
-                  type="button"
-                  onClick={() => setHistory([])}
-                  className="text-xs font-medium text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment transition-colors"
-                >
-                  Clear
-                </button>
-              </div>
-
-              <ul className="divide-y divide-limestone/70 dark:divide-charcoal-border/70">
-                {history.map((entry) => (
-                  <li
-                    key={entry.id}
-                    className="py-2 flex items-center justify-between gap-3"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-baseline gap-2">
-                        <span className="font-serif text-base font-semibold tabular-nums text-ink dark:text-parchment">
-                          {entry.total}
-                        </span>
-                        <span className="text-xs font-mono text-ink-muted dark:text-ash truncate">
-                          {entry.label}
-                        </span>
-                      </div>
-                      <p className="text-[11px] font-mono text-ink-muted dark:text-ash truncate">
-                        {entry.rolledAt} · [
-                        {entry.dice
-                          .map((d) =>
-                            d.dropped ? `~${d.value}~` : String(d.value)
-                          )
-                          .join(", ")}
-                        ]
-                      </p>
-                    </div>
-
-                    <button
-                      type="button"
-                      disabled={isRolling}
-                      onClick={() => executePlan(entry.plan)}
-                      className="h-7 px-2.5 rounded border border-limestone dark:border-charcoal-border text-xs font-medium text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment hover:border-lapis dark:hover:border-lapis-dark disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
-                    >
-                      Roll Again
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
         </div>
 
         {/* RIGHT COLUMN (5 cols, sticky): Unified 2-Mode Control Deck */}
@@ -1260,7 +1412,10 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
                 advMode={advMode}
                 onChangeAdvMode={setAdvMode}
                 selectedSpell={selectedSpell}
-                onSelectSpell={setSelectedSpell}
+                onSelectSpell={handleSelectSpellManual}
+                initialCastLevel={handoffMeta?.castLevel}
+                castAlreadySpent={handoffMeta?.alreadyCast}
+                handoffSeq={handoffMeta?.seq}
                 onRollFormula={handleSpellFormulaRoll}
                 onCastSpell={onCastSpell}
                 onOpenSpell={onOpenSpell}
@@ -1269,6 +1424,95 @@ export const DiceRollerView: React.FC<DiceRollerViewProps> = ({
           </div>
         </aside>
       </div>
+
+      {/* Collapsible Recent Rolls Log (Appears last, defaults to collapsed) */}
+      {history.length > 0 && (
+        <section
+          aria-label="Recent dice rolls"
+          className="rounded-lg border border-limestone dark:border-charcoal-border bg-paper dark:bg-obsidian overflow-hidden"
+        >
+          <div className="px-4 py-3 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              aria-expanded={recentRollsOpen}
+              onClick={() => setRecentRollsOpen((prev) => !prev)}
+              className="flex-1 min-w-0 flex items-center gap-2 text-left group"
+            >
+              <ChevronDown
+                className={`w-4 h-4 text-ink-muted dark:text-ash transition-transform shrink-0 ${
+                  recentRollsOpen ? "rotate-0" : "-rotate-90"
+                }`}
+              />
+              <h2 className="font-serif text-base font-semibold text-ink dark:text-parchment group-hover:text-lapis dark:group-hover:text-lapis-dark transition-colors">
+                Recent Rolls
+              </h2>
+              <span className="text-xs font-mono text-ink-muted dark:text-ash tabular-nums">
+                ({history.length})
+              </span>
+            </button>
+
+            {recentRollsOpen && (
+              <button
+                type="button"
+                onClick={() => {
+                  setHistory([]);
+                  setRecentRollsOpen(false);
+                }}
+                className="text-xs font-medium text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment transition-colors shrink-0"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+
+          {recentRollsOpen && (
+            <ul className="px-4 pb-3 border-t border-limestone/70 dark:border-charcoal-border/70 divide-y divide-limestone/70 dark:divide-charcoal-border/70">
+              {history.map((entry) => (
+                <li
+                  key={entry.id}
+                  className="py-2.5 flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-serif text-base font-semibold tabular-nums text-ink dark:text-parchment">
+                        {entry.total}
+                      </span>
+                      <span className="text-xs font-mono text-ink-muted dark:text-ash truncate">
+                        {entry.label}
+                      </span>
+                    </div>
+                    <p className="text-[11px] font-mono text-ink-muted dark:text-ash truncate">
+                      {entry.rolledAt} · [
+                      {entry.dice
+                        .map((d) =>
+                          d.dropped ? `~${d.value}~` : String(d.value)
+                        )
+                        .join(", ")}
+                      ]
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={isRolling}
+                    onClick={() => executePlan(entry.plan)}
+                    className="h-7 px-2.5 rounded border border-limestone dark:border-charcoal-border text-xs font-medium text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment hover:border-lapis dark:hover:border-lapis-dark disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
+                  >
+                    Roll Again
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
+      <DiceSettingsModal
+        isOpen={settingsOpen}
+        settings={diceSettings}
+        onChange={handleUpdateDiceSettings}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   );
 };

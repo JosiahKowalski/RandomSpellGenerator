@@ -82,12 +82,31 @@ export interface BuiltDieBlueprint {
   kind: DieKind;
   geometry: THREE.BufferGeometry;
   materials: THREE.MeshPhysicalMaterial[];
+  hoverMaterials: THREE.MeshPhysicalMaterial[];
+  heldMaterials: THREE.MeshPhysicalMaterial[];
+  droppedMaterials: THREE.MeshPhysicalMaterial[];
   textures: THREE.CanvasTexture[];
+  concealedMaterial: THREE.MeshPhysicalMaterial;
+  concealedMaterials: THREE.MeshPhysicalMaterial[];
+  concealedTexture: THREE.CanvasTexture;
   shape: CANNON.Shape;
   faces: FaceDescriptor[];
+  localVertices: THREE.Vector3[];
+  faceVertexIndices: number[][];
   d4Vertices?: VertexDescriptor[];
   radius: number;
   restHeight: number;
+}
+
+export function disposeDieBlueprint(bp: BuiltDieBlueprint): void {
+  bp.geometry.dispose();
+  bp.materials.forEach((m) => m.dispose());
+  bp.hoverMaterials.forEach((m) => m.dispose());
+  bp.heldMaterials.forEach((m) => m.dispose());
+  bp.droppedMaterials.forEach((m) => m.dispose());
+  bp.textures.forEach((t) => t.dispose());
+  bp.concealedMaterial.dispose();
+  bp.concealedTexture.dispose();
 }
 
 function createFaceTexture(
@@ -288,6 +307,89 @@ function createD4FaceTexture(
   return tex;
 }
 
+function createConcealedFaceTexture(
+  finish: DiceFinishTheme,
+  shapeType: "square" | "triangle" | "pentagon" | "kite",
+  maxAnisotropy: number
+): THREE.CanvasTexture {
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+
+  // Base resin fill
+  ctx.fillStyle = finish.bodyHex;
+  ctx.fillRect(0, 0, size, size);
+
+  // Soft frosted/cupped-hand veil so numerals are concealed cleanly
+  const grad = ctx.createRadialGradient(
+    size * 0.5,
+    size * 0.45,
+    size * 0.08,
+    size * 0.5,
+    size * 0.5,
+    size * 0.68
+  );
+  grad.addColorStop(0, "rgba(255,255,255,0.13)");
+  grad.addColorStop(1, "rgba(0,0,0,0.28)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+
+  // Subtle satin diagonal shimmer indicating held/concealed state
+  ctx.strokeStyle = "rgba(255,255,255,0.045)";
+  ctx.lineWidth = 2;
+  for (let i = -size; i < size * 2; i += 14) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i + size, size);
+    ctx.stroke();
+  }
+
+  // Facet bevel outline (matching numbered faces without any engraved digit)
+  ctx.strokeStyle = finish.edgeHex;
+  ctx.lineWidth = 6;
+  ctx.globalAlpha = 0.48;
+
+  if (shapeType === "square") {
+    ctx.strokeRect(14, 14, size - 28, size - 28);
+  } else if (shapeType === "triangle") {
+    ctx.beginPath();
+    ctx.moveTo(size * 0.5, size * 0.08);
+    ctx.lineTo(size * 0.09, size * 0.79);
+    ctx.lineTo(size * 0.91, size * 0.79);
+    ctx.closePath();
+    ctx.stroke();
+  } else if (shapeType === "pentagon") {
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const ang = -Math.PI / 2 + (i * Math.PI * 2) / 5;
+      const x = size * 0.5 + size * 0.43 * Math.cos(ang);
+      const y = size * 0.5 + size * 0.43 * Math.sin(ang);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+  } else if (shapeType === "kite") {
+    ctx.beginPath();
+    ctx.moveTo(size * 0.5, size * 0.06);
+    ctx.lineTo(size * 0.14, size * 0.56);
+    ctx.lineTo(size * 0.5, size * 0.86);
+    ctx.lineTo(size * 0.86, size * 0.56);
+    ctx.closePath();
+    ctx.stroke();
+  }
+
+  ctx.globalAlpha = 1;
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 function makeDieMaterial(
   tex: THREE.CanvasTexture,
   finish: DiceFinishTheme
@@ -300,6 +402,67 @@ function makeDieMaterial(
     clearcoatRoughness: 0.36,
     envMapIntensity: 0.55,
   });
+}
+
+function makeConcealedBundle(
+  finish: DiceFinishTheme,
+  shapeType: "square" | "triangle" | "pentagon" | "kite",
+  materials: THREE.MeshPhysicalMaterial[],
+  maxAnisotropy: number
+): {
+  hoverMaterials: THREE.MeshPhysicalMaterial[];
+  heldMaterials: THREE.MeshPhysicalMaterial[];
+  droppedMaterials: THREE.MeshPhysicalMaterial[];
+  concealedTexture: THREE.CanvasTexture;
+  concealedMaterial: THREE.MeshPhysicalMaterial;
+  concealedMaterials: THREE.MeshPhysicalMaterial[];
+} {
+  // Lightweight emissive/tint variants sharing the exact same GPU CanvasTextures (zero extra canvas draws or uploads)
+  const hoverMaterials = materials.map((m) => {
+    const c = m.clone();
+    c.emissive.setHex(0x1f2f47);
+    return c;
+  });
+  const heldMaterials = materials.map((m) => {
+    const c = m.clone();
+    c.emissive.setHex(0x293b56);
+    return c;
+  });
+  const droppedMaterials = materials.map((m) => {
+    const c = m.clone();
+    c.color.setHex(0x706c68);
+    c.roughness = Math.min(0.76, finish.roughness + 0.24);
+    c.clearcoat = Math.max(0.04, finish.clearcoat * 0.25);
+    c.envMapIntensity = 0.28;
+    return c;
+  });
+
+  const concealedTexture = createConcealedFaceTexture(
+    finish,
+    shapeType,
+    maxAnisotropy
+  );
+  const concealedMaterial = new THREE.MeshPhysicalMaterial({
+    map: concealedTexture,
+    roughness: Math.min(0.66, finish.roughness + 0.16),
+    metalness: finish.metalness,
+    clearcoat: Math.max(0.1, finish.clearcoat * 0.55),
+    clearcoatRoughness: 0.5,
+    envMapIntensity: 0.5,
+    emissive: new THREE.Color(0x293b56),
+  });
+  const concealedMaterials = Array.from(
+    { length: materials.length },
+    () => concealedMaterial
+  );
+  return {
+    hoverMaterials,
+    heldMaterials,
+    droppedMaterials,
+    concealedTexture,
+    concealedMaterial,
+    concealedMaterials,
+  };
 }
 
 function ensureOutwardWinding(
@@ -381,15 +544,44 @@ function buildD6(
     materials.push(makeDieMaterial(tex, finish));
   }
 
+  const half = size / 2;
+  const localVertices = [
+    new THREE.Vector3(half, half, half), // 0
+    new THREE.Vector3(half, half, -half), // 1
+    new THREE.Vector3(half, -half, half), // 2
+    new THREE.Vector3(half, -half, -half), // 3
+    new THREE.Vector3(-half, half, half), // 4
+    new THREE.Vector3(-half, half, -half), // 5
+    new THREE.Vector3(-half, -half, half), // 6
+    new THREE.Vector3(-half, -half, -half), // 7
+  ];
+  const faceVertexIndices = [
+    [0, 2, 3, 1], // +X
+    [4, 5, 7, 6], // -X
+    [0, 1, 5, 4], // +Y
+    [2, 6, 7, 3], // -Y
+    [0, 4, 6, 2], // +Z
+    [1, 3, 7, 5], // -Z
+  ];
+  const concealed = makeConcealedBundle(
+    finish,
+    "square",
+    materials,
+    maxAnisotropy
+  );
+
   return {
     kind: "d6",
     geometry,
     materials,
     textures,
-    shape: new CANNON.Box(new CANNON.Vec3(size / 2, size / 2, size / 2)),
+    ...concealed,
+    shape: new CANNON.Box(new CANNON.Vec3(half, half, half)),
     faces: faceSpec.map((f) => ({ value: f.val, normal: f.normal })),
+    localVertices,
+    faceVertexIndices,
     radius: size * 0.866, // exact half-diagonal so corners stay strictly inside tray rails
-    restHeight: size / 2,
+    restHeight: half,
   };
 }
 
@@ -460,14 +652,23 @@ function buildD4(
   geometry.computeVertexNormals();
 
   const restHeight = Math.abs(rawVerts[rawFaces[0][0]].dot(faces[0].normal));
+  const concealed = makeConcealedBundle(
+    finish,
+    "triangle",
+    materials,
+    maxAnisotropy
+  );
 
   return {
     kind: "d4",
     geometry,
     materials,
     textures,
+    ...concealed,
     shape: buildCannonPolyhedron(rawVerts, rawFaces),
     faces,
+    localVertices: rawVerts,
+    faceVertexIndices: rawFaces,
     d4Vertices: rawVerts.map((pos, i) => ({
       value: vertexValues[i],
       position: pos.clone(),
@@ -554,14 +755,23 @@ function buildD8(
   geometry.computeVertexNormals();
 
   const restHeight = Math.abs(rawVerts[cannonFaces[0][0]].dot(faces[0].normal));
+  const concealed = makeConcealedBundle(
+    finish,
+    "triangle",
+    materials,
+    maxAnisotropy
+  );
 
   return {
     kind: "d8",
     geometry,
     materials,
     textures,
+    ...concealed,
     shape: buildCannonPolyhedron(rawVerts, cannonFaces),
     faces,
+    localVertices: rawVerts,
+    faceVertexIndices: cannonFaces,
     radius,
     restHeight,
   };
@@ -701,14 +911,23 @@ function buildD10(
   geometry.computeVertexNormals();
 
   const restHeight = Math.abs(rawVerts[cannonFaces[0][0]].dot(faces[0].normal));
+  const concealed = makeConcealedBundle(
+    finish,
+    "kite",
+    materials,
+    maxAnisotropy
+  );
 
   return {
     kind,
     geometry,
     materials,
     textures,
+    ...concealed,
     shape: buildCannonPolyhedron(rawVerts, cannonFaces),
     faces,
+    localVertices: rawVerts,
+    faceVertexIndices: cannonFaces,
     radius: H,
     restHeight,
   };
@@ -740,15 +959,58 @@ function buildD12(
   }
   rawVerts.forEach((v) => v.normalize().multiplyScalar(radius));
 
-  // 12 face normals are the 12 vertices of the dual icosahedron
+  // Exact 12 face normals (true dual icosahedron of rawVerts above — 100% coplanar pentagons)
   const faceNormals: THREE.Vector3[] = [];
   for (const s1 of [-1, 1]) {
     for (const s2 of [-1, 1]) {
-      faceNormals.push(new THREE.Vector3(0, s1, s2 * phi).normalize());
-      faceNormals.push(new THREE.Vector3(s1, s2 * phi, 0).normalize());
-      faceNormals.push(new THREE.Vector3(s1 * phi, 0, s2).normalize());
+      faceNormals.push(new THREE.Vector3(0, s1 * phi, s2).normalize());
+      faceNormals.push(new THREE.Vector3(s1 * phi, s2, 0).normalize());
+      faceNormals.push(new THREE.Vector3(s1, 0, s2 * phi).normalize());
     }
   }
+
+  // Standard balanced tabletop d12 numbering: opposite faces strictly sum to 13
+  const faceValues = new Array<number>(12).fill(1);
+  const findAntipode = (i: number): number => {
+    let bestJ = 0;
+    let minDot = 2;
+    for (let j = 0; j < faceNormals.length; j++) {
+      const d = faceNormals[i]!.dot(faceNormals[j]!);
+      if (d < minDot) {
+        minDot = d;
+        bestJ = j;
+      }
+    }
+    return bestJ;
+  };
+  const topIdx = 0;
+  const bottomIdx = findAntipode(topIdx);
+  faceValues[topIdx] = 12;
+  faceValues[bottomIdx] = 1;
+
+  const topNorm = faceNormals[topIdx]!;
+  const refAxis =
+    Math.abs(topNorm.y) < 0.9
+      ? new THREE.Vector3(0, 1, 0)
+      : new THREE.Vector3(1, 0, 0);
+  const ringX = new THREE.Vector3().crossVectors(refAxis, topNorm).normalize();
+  const ringY = new THREE.Vector3().crossVectors(topNorm, ringX).normalize();
+
+  // The 5 faces adjacent to 12 (dot > 0) ordered around the pole; opposite faces flank 1
+  const upperRing = faceNormals
+    .map((n, i) => ({ i, dot: n.dot(topNorm), n }))
+    .filter((entry) => entry.i !== topIdx && entry.dot > 0.1)
+    .sort(
+      (a, b) =>
+        Math.atan2(a.n.dot(ringY), a.n.dot(ringX)) -
+        Math.atan2(b.n.dot(ringY), b.n.dot(ringX))
+    );
+  const upperVals = [2, 10, 4, 8, 6];
+  upperRing.forEach((entry, k) => {
+    const val = upperVals[k]!;
+    faceValues[entry.i] = val;
+    faceValues[findAntipode(entry.i)] = 13 - val;
+  });
 
   const cannonFaces: number[][] = [];
   const positions: number[] = [];
@@ -765,7 +1027,7 @@ function buildD12(
   }
 
   faceNormals.forEach((normal, idx) => {
-    // Pick the 5 vertices with largest dot product along this face normal
+    // Pick the 5 coplanar vertices with largest dot product along this face normal
     const scored = rawVerts
       .map((v, vi) => ({ vi, dot: v.dot(normal) }))
       .sort((a, b) => b.dot - a.dot)
@@ -817,7 +1079,7 @@ function buildD12(
     }
     geometry.addGroup(start, 9, idx);
 
-    const value = idx + 1;
+    const value = faceValues[idx]!;
     const tex = createFaceTexture(
       String(value),
       finish,
@@ -845,14 +1107,23 @@ function buildD12(
   geometry.computeVertexNormals();
 
   const restHeight = Math.abs(rawVerts[cannonFaces[0][0]].dot(faces[0].normal));
+  const concealed = makeConcealedBundle(
+    finish,
+    "pentagon",
+    materials,
+    maxAnisotropy
+  );
 
   return {
     kind: "d12",
     geometry,
     materials,
     textures,
+    ...concealed,
     shape: buildCannonPolyhedron(rawVerts, cannonFaces),
     faces,
+    localVertices: rawVerts,
+    faceVertexIndices: cannonFaces,
     radius,
     restHeight,
   };
@@ -903,12 +1174,67 @@ function buildD20(
     [9, 8, 1],
   ];
 
-  // Classic balanced d20 face distribution (opposite faces sum to 21)
-  const faceValues = [
-    20, 2, 12, 8, 14, 18, 4, 16, 6, 10, 1, 19, 9, 13, 7, 3, 17, 5, 15, 11,
-  ];
+  const cannonFaces = rawFaceIndices.map((rawFace) =>
+    ensureOutwardWinding(rawVerts, rawFace)
+  );
+  const faceNormals = cannonFaces.map((face) =>
+    computeFaceNormal(rawVerts, face)
+  );
 
-  const cannonFaces: number[][] = [];
+  // Classic balanced tabletop d20 numbering: opposite faces strictly sum to 21,
+  // with 2, 8, 14 flanking 20 and alternating high/low values around the middle band
+  const faceValues = new Array<number>(20).fill(1);
+  const findAntipode = (i: number): number => {
+    let bestJ = 0;
+    let minDot = 2;
+    for (let j = 0; j < faceNormals.length; j++) {
+      const d = faceNormals[i]!.dot(faceNormals[j]!);
+      if (d < minDot) {
+        minDot = d;
+        bestJ = j;
+      }
+    }
+    return bestJ;
+  };
+  const topIdx = 0;
+  const bottomIdx = findAntipode(topIdx);
+  faceValues[topIdx] = 20;
+  faceValues[bottomIdx] = 1;
+
+  const topNorm = faceNormals[topIdx]!;
+  const refAxis =
+    Math.abs(topNorm.y) < 0.9
+      ? new THREE.Vector3(0, 1, 0)
+      : new THREE.Vector3(1, 0, 0);
+  const ringX = new THREE.Vector3().crossVectors(refAxis, topNorm).normalize();
+  const ringY = new THREE.Vector3().crossVectors(topNorm, ringX).normalize();
+  const ringAngle = (n: THREE.Vector3) =>
+    Math.atan2(n.dot(ringY), n.dot(ringX));
+
+  // 3 faces sharing an edge with 20 (dot ~0.795) -> classic 2, 8, 14 (opposites 19, 13, 7)
+  const adjTo20 = faceNormals
+    .map((n, i) => ({ i, dot: n.dot(topNorm), ang: ringAngle(n) }))
+    .filter((e) => e.i !== topIdx && e.dot > 0.5)
+    .sort((a, b) => a.ang - b.ang);
+  const adjVals = [2, 8, 14];
+  adjTo20.forEach((e, k) => {
+    const val = adjVals[k]!;
+    faceValues[e.i] = val;
+    faceValues[findAntipode(e.i)] = 21 - val;
+  });
+
+  // 6 upper-equatorial faces (0 < dot < 0.5, dot ~0.188) -> alternating high/low, opposites sum to 21
+  const upperBand = faceNormals
+    .map((n, i) => ({ i, dot: n.dot(topNorm), ang: ringAngle(n) }))
+    .filter((e) => e.dot > 0.01 && e.dot <= 0.5)
+    .sort((a, b) => a.ang - b.ang);
+  const bandVals = [18, 4, 16, 6, 12, 10];
+  upperBand.forEach((e, k) => {
+    const val = bandVals[k]!;
+    faceValues[e.i] = val;
+    faceValues[findAntipode(e.i)] = 21 - val;
+  });
+
   const positions: number[] = [];
   const uvs: number[] = [];
   const geometry = new THREE.BufferGeometry();
@@ -922,10 +1248,7 @@ function buildD20(
     [0.91, 0.21],
   ];
 
-  rawFaceIndices.forEach((rawFace, idx) => {
-    const face = ensureOutwardWinding(rawVerts, rawFace);
-    cannonFaces.push(face);
-
+  cannonFaces.forEach((face, idx) => {
     const start = positions.length / 3;
     for (let i = 0; i < 3; i++) {
       const v = rawVerts[face[i]];
@@ -934,7 +1257,7 @@ function buildD20(
     }
     geometry.addGroup(start, 3, idx);
 
-    const value = faceValues[idx];
+    const value = faceValues[idx]!;
     const tex = createFaceTexture(
       String(value),
       finish,
@@ -950,7 +1273,7 @@ function buildD20(
     materials.push(makeDieMaterial(tex, finish));
     faces.push({
       value,
-      normal: computeFaceNormal(rawVerts, face),
+      normal: faceNormals[idx]!,
     });
   });
 
@@ -962,14 +1285,23 @@ function buildD20(
   geometry.computeVertexNormals();
 
   const restHeight = Math.abs(rawVerts[cannonFaces[0][0]].dot(faces[0].normal));
+  const concealed = makeConcealedBundle(
+    finish,
+    "triangle",
+    materials,
+    maxAnisotropy
+  );
 
   return {
     kind: "d20",
     geometry,
     materials,
     textures,
+    ...concealed,
     shape: buildCannonPolyhedron(rawVerts, cannonFaces),
     faces,
+    localVertices: rawVerts,
+    faceVertexIndices: cannonFaces,
     radius,
     restHeight,
   };

@@ -22,6 +22,12 @@ export interface Spell {
   hasCostlyMaterial: boolean;
 }
 
+export interface DiceCastHandoff {
+  spell: Spell;
+  castLevel: number | null;
+  alreadyCast: boolean;
+}
+
 export interface StoredRingSpell {
   id: string;
   spellName: string;

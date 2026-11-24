@@ -2,5 +2,5 @@
   "name": "Wild Magic Sorcerer Dashboard",
   "description": "A custom interactive dashboard for D&D 5e Wild Magic Sorcerers featuring the 'Wild Shuffle' daily spell engine, automated stat tracking, and integrated class mechanics.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

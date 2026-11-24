@@ -223,9 +223,9 @@ export const RulesView: React.FC<RulesViewProps> = ({
         <button
           type="button"
           onClick={() => onUpdateConfig({ ...DEFAULT_CONFIG })}
-          className="h-10 px-4 inline-flex items-center gap-2 rounded-md border border-limestone dark:border-charcoal-border text-sm text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment hover:bg-linen dark:hover:bg-soot transition-colors whitespace-nowrap self-start sm:self-auto"
+          className="h-9 px-3.5 inline-flex items-center gap-1.5 rounded-md border border-limestone dark:border-charcoal-border text-xs font-medium text-ink-muted dark:text-ash hover:text-ink dark:hover:text-parchment hover:bg-linen dark:hover:bg-soot transition-colors whitespace-nowrap self-start sm:self-auto"
         >
-          <RotateCcw className="w-4 h-4" />
+          <RotateCcw className="w-3.5 h-3.5" />
           <span>Reset Defaults</span>
         </button>
       </div>
@@ -753,6 +753,7 @@ export const RulesView: React.FC<RulesViewProps> = ({
                   type="button"
                   role="switch"
                   aria-checked={enabled}
+                  aria-label={toggle.title}
                   onClick={() =>
                     onUpdateConfig({ ...config, [toggle.key]: !enabled })
                   }

@@ -9,6 +9,7 @@ import {
 import { X } from "lucide-react";
 import {
   AppView,
+  DiceCastHandoff,
   GrimoireSnapshot,
   LevelShortfall,
   RandomizerConfig,
@@ -59,7 +60,7 @@ import {
   saveCloudGrimoire,
   testFirestoreConnection,
 } from "./lib/firebaseClient";
-import { TopBar } from "./components/TopBar";
+import { TopBar, WorkspaceSubNav } from "./components/TopBar";
 import { SpellbookView } from "./components/SpellbookView";
 import { MetamagicView } from "./components/MetamagicView";
 import { DiceRollerView } from "./components/DiceRollerView";
@@ -67,6 +68,8 @@ import { RingOfSpellStoringView } from "./components/RingOfSpellStoringView";
 import { RulesView } from "./components/RulesView";
 import { SpellPoolView } from "./components/SpellPoolView";
 import { SpellReaderModal } from "./components/SpellReaderModal";
+import { RulesAssistantDrawer } from "./components/RulesAssistantDrawer";
+import { useAiAvailability } from "./lib/useAiAvailability";
 
 interface ToastMessage {
   id: number;
@@ -178,6 +181,7 @@ export default function App() {
 
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [activeView, setActiveView] = useState<AppView>("spellbook");
+  const aiAvailable = useAiAvailability();
 
   // Spell Catalog
   const [catalog, setCatalog] = useState<Spell[]>([]);
@@ -208,7 +212,8 @@ export default function App() {
   const [config, setConfig] = useState<RandomizerConfig>(initialLocal.config);
   const [shortfalls, setShortfalls] = useState<LevelShortfall[]>([]);
   const [selectedSpell, setSelectedSpell] = useState<Spell | null>(null);
-  const [pendingDiceSpell, setPendingDiceSpell] = useState<Spell | null>(null);
+  const [pendingDiceCast, setPendingDiceCast] =
+    useState<DiceCastHandoff | null>(null);
   const [lastSlotFlash, setLastSlotFlash] = useState<{
     level: number;
     seq: number;
@@ -249,6 +254,11 @@ export default function App() {
     document.documentElement.classList.toggle("dark", theme === "dark");
     localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
+
+  // Start cleanly at the top when switching main navigation views
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
+  }, [activeView]);
 
   // Load bundled or custom CSV catalog
   const loadBundledCatalog = useCallback(async () => {
@@ -942,7 +952,10 @@ export default function App() {
     handleSetConcentration(null);
   };
 
-  const handleCastSpell = (spell: Spell, slotLevel: number | null) => {
+  const handleCastSpell = (
+    spell: Spell,
+    slotLevel: number | null
+  ): boolean => {
     const previousSlots = cloneSlotState(spellSlots);
     const previousConc = concentrationSpell;
 
@@ -955,7 +968,7 @@ export default function App() {
         showToast(
           `No ${SPELL_LEVELS[slotLevel]?.shortLabel}-level spell slots remaining.`
         );
-        return;
+        return false;
       }
       setSpellSlots((prev) => ({
         ...prev,
@@ -994,6 +1007,35 @@ export default function App() {
     } else {
       showToast(fullMessage);
     }
+    return true;
+  };
+
+  const handleCastAndRoll = (spell: Spell, slotLevel: number | null) => {
+    const didCast = handleCastSpell(spell, slotLevel);
+    if (!didCast) return;
+    setSelectedSpell(null);
+    setPendingDiceCast({
+      spell,
+      castLevel: spell.levelIndex === 0 ? null : slotLevel ?? spell.levelIndex,
+      alreadyCast: true,
+    });
+    setActiveView("dice");
+  };
+
+  const handleOpenSpellInTray = (
+    spell: Spell,
+    castLevel?: number | null
+  ) => {
+    setSelectedSpell(null);
+    setPendingDiceCast({
+      spell,
+      castLevel:
+        spell.levelIndex === 0
+          ? null
+          : castLevel ?? Math.max(1, spell.levelIndex),
+      alreadyCast: false,
+    });
+    setActiveView("dice");
   };
 
   // Ring of Spell Storing Handlers
@@ -1029,7 +1071,7 @@ export default function App() {
     });
   };
 
-  const handleCastRingSpell = (entryId: string) => {
+  const handleCastRingSpell = (entryId: string, openInTray = false) => {
     const target = ringSpells.find((s) => s.id === entryId);
     if (!target) return;
     const previousRing = [...ringSpells];
@@ -1055,6 +1097,16 @@ export default function App() {
       setRingSpells(previousRing);
       setConcentrationSpell(previousConc);
     });
+
+    if (openInTray && spellObj) {
+      setSelectedSpell(null);
+      setPendingDiceCast({
+        spell: spellObj,
+        castLevel: target.castLevel,
+        alreadyCast: true,
+      });
+      setActiveView("dice");
+    }
   };
 
   const handleClearRing = () => {
@@ -1326,6 +1378,13 @@ export default function App() {
           </div>
         ) : (
           <>
+            <WorkspaceSubNav
+              activeView={activeView}
+              onSelectView={setActiveView}
+              poolCount={eligiblePool.length}
+              ringUsedLevels={ringUsedLevels}
+            />
+
             {activeView === "spellbook" && (
               <SpellbookView
                 catalog={catalog}
@@ -1348,6 +1407,7 @@ export default function App() {
                 onOpenRules={() => setActiveView("rules")}
                 onOpenMetamagic={() => setActiveView("metamagic")}
                 onCastSpell={handleCastSpell}
+                onCastAndRoll={handleCastAndRoll}
                 onExpendSlot={handleExpendSlot}
                 onRecoverSlot={handleRecoverSlot}
                 onSetCustomMaxSlot={handleSetCustomMaxSlot}
@@ -1385,8 +1445,8 @@ export default function App() {
                 rolledSpells={rolledSpells}
                 casterLevel={config.casterLevel}
                 slotState={spellSlots}
-                initialSpell={pendingDiceSpell}
-                onClearInitialSpell={() => setPendingDiceSpell(null)}
+                initialCastHandoff={pendingDiceCast}
+                onClearInitialCastHandoff={() => setPendingDiceCast(null)}
                 onCastSpell={handleCastSpell}
                 onOpenSpell={setSelectedSpell}
               />
@@ -1399,7 +1459,10 @@ export default function App() {
                 rolledSpells={rolledSpells}
                 ringSpells={ringSpells}
                 onStoreSpell={handleStoreRingSpell}
-                onCastStoredSpell={handleCastRingSpell}
+                onCastStoredSpell={(entryId) => handleCastRingSpell(entryId, false)}
+                onCastAndRollStoredSpell={(entryId) =>
+                  handleCastRingSpell(entryId, true)
+                }
                 onClearRing={handleClearRing}
                 onOpenSpell={setSelectedSpell}
               />
@@ -1437,6 +1500,9 @@ export default function App() {
           <p className="font-mono tabular-nums">
             {catalog.length} spells loaded ·{" "}
             {authUser ? "Cloud Sync Ready" : "Saved Locally"}
+            {aiAvailable === false && (
+              <span className="opacity-70"> · AI features unavailable</span>
+            )}
           </p>
         </div>
       </footer>
@@ -1455,20 +1521,33 @@ export default function App() {
         onReroll={handleRerollSingle}
         onQuickStoreInRing={handleQuickStoreInRing}
         onCastSpell={handleCastSpell}
+        onCastAndRoll={handleCastAndRoll}
         onSetConcentration={handleSetConcentration}
-        onRollSpellInTray={(spell) => {
-          setSelectedSpell(null);
-          setPendingDiceSpell(spell);
-          setActiveView("dice");
-        }}
+        onRollSpellInTray={handleOpenSpellInTray}
+      />
+
+      <RulesAssistantDrawer
+        catalog={catalog}
+        knownSpells={knownSpells}
+        rolledSpells={rolledSpells}
+        ringSpells={ringSpells}
+        config={config}
+        slotState={spellSlots}
+        sorcery={sorcery}
+        concentrationSpell={concentrationSpell}
+        activeView={activeView}
+        openSpell={selectedSpell}
       />
 
       {/* Non-intrusive Toast Notification */}
       {toast && (
         <div
+          key={toast.id}
           role="status"
           aria-live="polite"
-          className="fixed bottom-5 right-5 z-50 max-w-sm rounded-lg border border-limestone dark:border-charcoal-border bg-ink text-paper dark:bg-parchment dark:text-obsidian shadow-xl px-4 py-3 flex items-center gap-3 text-sm"
+          className={`fixed right-5 z-50 max-w-sm rounded-lg border border-limestone dark:border-charcoal-border bg-ink text-paper dark:bg-parchment dark:text-obsidian shadow-xl px-4 py-3 flex items-center gap-3 text-sm animate-toast-in ${
+            aiAvailable === true ? "bottom-16 sm:bottom-18" : "bottom-5"
+          }`}
         >
           <span className="flex-1 leading-snug">{toast.text}</span>
           {toast.actionLabel && toast.onAction && (

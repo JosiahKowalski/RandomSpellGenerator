@@ -178,15 +178,38 @@ export const SpellPoolView: React.FC<SpellPoolViewProps> = ({
       {/* Reference Table */}
       <div className="border border-limestone dark:border-charcoal-border rounded-lg overflow-hidden">
         {visibleSpells.length === 0 ? (
-          <div className="py-12 px-6 text-center text-sm text-ink-muted dark:text-ash">
-            No spells match the current filters. Try adjusting your odds in Rules or selecting All Levels.
+          <div className="py-12 px-6 text-center space-y-3">
+            <p className="text-sm text-ink-muted dark:text-ash">
+              No spells match the current filters. Try adjusting your odds in Rules or selecting All Levels.
+            </p>
+            {(searchQuery || levelFilter !== "all") && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery("");
+                  setLevelFilter("all");
+                }}
+                className="h-9 px-3.5 rounded-md border border-limestone dark:border-charcoal-border text-xs font-medium text-ink dark:text-parchment hover:bg-linen dark:hover:bg-soot transition-colors"
+              >
+                Show All Eligible Spells
+              </button>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-linen dark:bg-soot border-b border-limestone dark:border-charcoal-border text-xs font-medium text-ink-muted dark:text-ash">
-                  <th className="py-2.5 px-4">
+                  <th
+                    className="py-2.5 px-4"
+                    aria-sort={
+                      sortField === "name"
+                        ? sortDir === "asc"
+                          ? "ascending"
+                          : "descending"
+                        : "none"
+                    }
+                  >
                     <button
                       type="button"
                       onClick={() => handleSort("name")}
@@ -195,7 +218,16 @@ export const SpellPoolView: React.FC<SpellPoolViewProps> = ({
                       Spell Name {renderSortIcon("name")}
                     </button>
                   </th>
-                  <th className="py-2.5 px-4">
+                  <th
+                    className="py-2.5 px-4"
+                    aria-sort={
+                      sortField === "levelIndex"
+                        ? sortDir === "asc"
+                          ? "ascending"
+                          : "descending"
+                        : "none"
+                    }
+                  >
                     <button
                       type="button"
                       onClick={() => handleSort("levelIndex")}
@@ -204,7 +236,16 @@ export const SpellPoolView: React.FC<SpellPoolViewProps> = ({
                       Level {renderSortIcon("levelIndex")}
                     </button>
                   </th>
-                  <th className="py-2.5 px-4 hidden sm:table-cell">
+                  <th
+                    className="py-2.5 px-4 hidden sm:table-cell"
+                    aria-sort={
+                      sortField === "schoolBase"
+                        ? sortDir === "asc"
+                          ? "ascending"
+                          : "descending"
+                        : "none"
+                    }
+                  >
                     <button
                       type="button"
                       onClick={() => handleSort("schoolBase")}
@@ -213,7 +254,16 @@ export const SpellPoolView: React.FC<SpellPoolViewProps> = ({
                       School {renderSortIcon("schoolBase")}
                     </button>
                   </th>
-                  <th className="py-2.5 px-4">
+                  <th
+                    className="py-2.5 px-4"
+                    aria-sort={
+                      sortField === "weight"
+                        ? sortDir === "asc"
+                          ? "ascending"
+                          : "descending"
+                        : "none"
+                    }
+                  >
                     <button
                       type="button"
                       onClick={() => handleSort("weight")}
@@ -225,7 +275,16 @@ export const SpellPoolView: React.FC<SpellPoolViewProps> = ({
                   <th className="py-2.5 px-4 hidden md:table-cell">
                     Casting Time
                   </th>
-                  <th className="py-2.5 px-4 hidden lg:table-cell">
+                  <th
+                    className="py-2.5 px-4 hidden lg:table-cell"
+                    aria-sort={
+                      sortField === "source"
+                        ? sortDir === "asc"
+                          ? "ascending"
+                          : "descending"
+                        : "none"
+                    }
+                  >
                     <button
                       type="button"
                       onClick={() => handleSort("source")}
@@ -247,7 +306,16 @@ export const SpellPoolView: React.FC<SpellPoolViewProps> = ({
                       className="hover:bg-linen/70 dark:hover:bg-soot cursor-pointer transition-colors"
                     >
                       <td className="py-2.5 px-4 text-sm font-medium text-ink dark:text-parchment">
-                        {spell.name}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenSpell(spell);
+                          }}
+                          className="text-left hover:text-lapis dark:hover:text-lapis-dark focus-visible:outline-none focus-visible:underline transition-colors"
+                        >
+                          {spell.name}
+                        </button>
                       </td>
                       <td className="py-2.5 px-4 text-xs font-mono tabular-nums text-ink-muted dark:text-ash whitespace-nowrap">
                         {SPELL_LEVELS[spell.levelIndex]?.shortLabel}
